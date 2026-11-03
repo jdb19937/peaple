@@ -7,18 +7,34 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 root, port = os.path.abspath(sys.argv[1]), int(sys.argv[2])
 index = sys.argv[3] if len(sys.argv) > 3 else 'index.html'
 
+# extra hostnames behind the same tunnel entry: whole-host redirects, and hosts served from another directory
+HOST_REDIRECTS = {
+    'fordcountychronicle.ai': 'https://peaple.io/fordcountychronicle/chat',
+    'www.fordcountychronicle.ai': 'https://peaple.io/fordcountychronicle/chat',
+}
+HOST_DIRS = {
+    'contezko.com': '/home/dan/makemore/contezko',
+    'www.contezko.com': '/home/dan/makemore/contezko',
+}
+
 def is_local(host):
     """True for LAN/loopback hosts (localhost, *.local, bare IPs); public domains keep the pages' real links."""
     return host in ('localhost', '127.0.0.1', '::1') or host.endswith('.local') or host[:1].isdigit() or host.startswith('[')
 
 class H(SimpleHTTPRequestHandler):
     def __init__(self, *a, **k): super().__init__(*a, directory=root, **k)
+    def host(self):
+        return (self.headers.get('Host') or 'localhost').split(':')[0].lower()
     def translate_path(self, path):
+        r = HOST_DIRS.get(self.host(), root)
         p = path.split('?', 1)[0].split('#', 1)[0].strip('/')
-        if p == '': p = index
-        elif '.' not in os.path.basename(p) and os.path.isfile(os.path.join(root, p + '.html')): p += '.html'
-        return os.path.join(root, p)
+        if p == '': p = index if r == root else 'index.html'
+        elif '.' not in os.path.basename(p) and os.path.isfile(os.path.join(r, p + '.html')): p += '.html'
+        return os.path.join(r, p)
     def do_GET(self):
+        if self.host() in HOST_REDIRECTS:
+            self.send_response(301); self.send_header('Location', HOST_REDIRECTS[self.host()])
+            self.send_header('Content-Length', '0'); self.send_header('Cache-Control', 'public, max-age=3600'); self.end_headers(); return
         if self.path.split('?', 1)[0] == '/text.png':
             return self.text_png()
         if self.path.split('?', 1)[0] == '/headline.png':
