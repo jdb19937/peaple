@@ -12,10 +12,11 @@ sub _slurplist {
 }
 
 BEGIN {
-  our @ppnom = _slurplist("/var/www/html/perl/ppnoms.txt");
-  our @psnom = _slurplist("/var/www/html/perl/psnoms.txt");
-  our @spnom = _slurplist("/var/www/html/perl/spnoms.txt");
-  our @ssnom = _slurplist("/var/www/html/perl/ssnoms.txt");
+  my $root = $ENV{PEAPLE_ROOT} // "/var/www/html/perl";
+  our @ppnom = _slurplist("$root/ppnoms.txt");
+  our @psnom = _slurplist("$root/psnoms.txt");
+  our @spnom = _slurplist("$root/spnoms.txt");
+  our @ssnom = _slurplist("$root/ssnoms.txt");
 }
 
 1

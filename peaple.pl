@@ -1,10 +1,11 @@
 #!/usr/bin/perl
 
 BEGIN {
-  our $rootdir = "/var/www/html/perl";
+  our $rootdir = $ENV{PEAPLE_ROOT} // "/var/www/html/perl";
 }
 
 use lib $rootdir;
+use lib "$rootdir/lib";
 use peaple;
 use html;
 use math;
@@ -91,6 +92,34 @@ if ($path eq 'favicon.ico') {
   exit 0;
 }
 
+# edit?op=rblend&nom=X&mul=M&vdev=D&r=R[&return=URL]: blend the deviated rendering
+# (same deviation the PNG shows for vdev/r) into X's vector by M, then redirect (hotorbot.ai)
+if ($path eq 'edit') {
+  my $op = $cgi->param('op') // '';
+  my $enom = lc($cgi->param('nom') // '');
+  $enom =~ /^[a-z0-9_]+$/ or die "bad nom";
+  if ($op eq 'rblend') {
+    my $mul = $cgi->param('mul') // 0.05;
+    my $vdev = $cgi->param('vdev') // 1.0;
+    my $r = $cgi->param('r') // rand(1);
+    my $vis = $peaple->load_visage($enom) or die "no visage";
+    my @dvec = @{$vis->{vec}};
+    peaple::_vecdev(\@dvec, $vdev, $r);
+    my $vv = $vis->{vec};
+    for (my $i = 0; $i < @$vv; ++$i) {
+      $$vv[$i] = $$vv[$i] * (1 - $mul) + $dvec[$i] * $mul;
+    }
+    $peaple->save_visage($vis);
+  }
+  my $ret = $cgi->param('return') // "/$enom";
+  print "Status: 302\r\n";
+  print "Location: $ret\r\n";
+  print "Content-Length: 0\r\n";
+  print "Content-Type: text/html\r\n";
+  print "\r\n";
+  exit 0;
+}
+
 my ($nom, $func, @extra) = split /\//, $path;
 $func = 'wall' if $func eq '';
 
@@ -113,8 +142,8 @@ if ($nomext eq "png") {
 
   my $dim = $cgi->param('dim') // 512;
   my $mul = $cgi->param('mul') // 1.0;
-  my $dev = $cgi->param('dev') // 0.0;
-  my $rnd = $cgi->param('rnd');
+  my $dev = $cgi->param('dev') // $cgi->param('vdev') // 0.0;   # vdev/r: hotorbot's names
+  my $rnd = $cgi->param('rnd') // $cgi->param('r');
 
   my $vis = $peaple->load_visage($nom) or die "no visage";
 
@@ -320,6 +349,13 @@ if ($nomext eq "png") {
       open(my $out, "| convert - -set comment '$comment' $rootdir/uploads/$nom.png") or die;
       print $out $data;
       close($out);
+
+      # default markers from the autoposer (falls back to the fixed defaults above if the poser server is down)
+      if (my @m = $peaple->autopose("$rootdir/uploads/$nom.png")) {
+        $comment = sprintf("#p:%d,%d #q:%d,%d #r:%d,%d", @m);
+        system("mogrify", "+set", "comment", "$rootdir/uploads/$nom.png");
+        system("mogrify", "-set", "comment", $comment, "$rootdir/uploads/$nom.png");
+      }
     }
   }
 
@@ -381,7 +417,9 @@ if ($nomext eq "png") {
     my @aff = math::getaff($px, $py, $qx, $qy, $rx, $ry);
     my $aff = join(',', @aff);
 
-    open(my $rgbfp, "convert $rootdir/uploads/$nom.png -affine '$aff' -transform -crop 128x128+0+0 -extent 128x128 +repage +set comment ppm:- |") or die;
+    # -affine/-transform auto-sizes the canvas and drops the translation (IM 6.9.12), so the face landed in the wrong
+    # place; AffineProjection with an explicit viewport maps the markers exactly onto the canonical points
+    open(my $rgbfp, "convert $rootdir/uploads/$nom.png -virtual-pixel mirror -define distort:viewport=128x128+0+0 -distort AffineProjection '$aff' +repage +set comment ppm:- |") or die;
     my $rgb;
     {
       local $/ = "\n";
@@ -430,7 +468,7 @@ if ($nomext eq "png") {
 
     </head>
 
-      <body bgcolor="#ffffff">
+      <body bgcolor="#000000" text="#ffffff" link="#9999ff" vlink="#bb99ff">
         $html::header
         $subhead
 
@@ -440,6 +478,129 @@ if ($nomext eq "png") {
       </body>
     </html>
   >;
+
+} elsif ($func eq 'chat') {
+
+  # chat with the parson: picture left, fixed-width transcript canvas right (your lines in mork, the parson's in titulus,
+  # drawn from the phont glyph grids client-side so streamed tokens render as they arrive), one-line entry bar below.
+  # The reply streams from /$nom/chat.sse (devserver.py -> llama-server) with a persona derived from the nom.
+  my $subhead = html::subhead($nom);
+
+  print "Content-Type: text/html\r\n\r\n";
+  print <<"END";
+    <html>
+    <head>
+    <title>peaple.io / $nom / chat</title>
+    <meta property='og:title' content='$nom'>
+    <meta property='og:image' content='https://peaple.io/$nom.png'>
+    <meta property='og:url' content='https://peaple.io/$nom/chat'>
+    <link rel='canonical' href='https://peaple.io/$nom/chat'>
+    </head>
+      <body bgcolor="#000000" text="#ffffff" link="#9999ff" vlink="#bb99ff">
+        $html::header
+        $subhead
+
+        <table width="1280" cellpadding="0" cellspacing="0"><tr>
+          <td valign="top" width="512"><a href="/$nom/fam"><img id="pic" src="/$nom.png?dim=512" width="512" height="512"/></a></td>
+          <td width="16"></td>
+          <td valign="top">
+            <canvas id="chatcan" width="736" height="456" style="display: block; background: #000000"></canvas>
+            <div style="width: 736px; height: 56px; padding-top: 8px; box-sizing: border-box">
+              <input id="chatin" type="text" maxlength="400" autocomplete="off"
+                style="width: 100%; box-sizing: border-box; font-size: 22px; padding: 8px; background: #111111; color: #ffffff; border: 2px solid #444444; outline: none"/>
+            </div>
+          </td>
+        </tr></table>
+
+    <script>
+    (function() {
+      var nom = "$nom";
+      var COLS = 46, ROWS = 19, CW = 16, CH = 24;
+      var can = document.getElementById('chatcan'), ctx = can.getContext('2d');
+      var inp = document.getElementById('chatin');
+      var sheets = {};
+      ['mork', 'titulus'].forEach(function(n) {
+        var im = new Image(); im.onload = draw; im.src = '/fontasy/' + n + '.png?grid=8'; sheets[n] = im;
+      });
+      var transcript = [];   // {who: 'user'|'parson', text: '...'}
+      var busy = false;
+
+      function ascii(t) {   // the phonts have the 96 printable ASCII glyphs; fold curly quotes, dashes, accents
+        return t.replace(/[\\u2018\\u2019\\u201a\\u2032]/g, "'").replace(/[\\u201c\\u201d\\u201e\\u2033]/g, '"')
+                .replace(/[\\u2013\\u2014\\u2015]/g, '-').replace(/\\u2026/g, '...').replace(/\\u00a0/g, ' ')
+                .normalize('NFKD').replace(/[\\u0300-\\u036f]/g, '');
+      }
+      function wrap(text, cols) {
+        var lines = [], line = '';
+        text = ascii(text);
+        text.split(/\\s+/).forEach(function(w) {
+          while (w.length > cols) { if (line) { lines.push(line); line = ''; } lines.push(w.substr(0, cols)); w = w.substr(cols); }
+          if (!w) return;
+          if (line && line.length + 1 + w.length > cols) { lines.push(line); line = w; }
+          else line = line ? line + ' ' + w : w;
+        });
+        if (line) lines.push(line);
+        return lines;
+      }
+      function drawText(phont, s, x, y) {
+        var im = sheets[phont]; if (!im || !im.complete) return;
+        for (var i = 0; i < s.length; ++i) {
+          var c = s.charCodeAt(i); if (c < 0x20 || c > 0x7e) c = 0x7f;
+          var k = c - 0x20;
+          ctx.drawImage(im, (k % 12) * CW, Math.floor(k / 12) * CH, CW, CH, x + i * CW, y, CW, CH);
+        }
+      }
+      function draw() {
+        ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, can.width, can.height);
+        var rows = [];
+        transcript.forEach(function(m, i) {
+          if (i) rows.push(null);
+          var ph = m.who == 'user' ? 'mork' : 'titulus';   // you type in mork (learn it by typing), the parson answers in titulus
+          wrap(m.text || (m.who == 'parson' && busy ? '...' : ''), COLS).forEach(function(l) { rows.push([ph, l]); });
+        });
+        if (rows.length > ROWS) rows = rows.slice(rows.length - ROWS);
+        rows.forEach(function(r, i) { if (r) drawText(r[0], r[1], 0, i * CH); });
+      }
+
+      function send() {
+        var text = inp.value.replace(/\\s+/g, ' ').trim();
+        if (!text || busy) return;
+        inp.value = '';
+        transcript.push({who: 'user', text: text});
+        var reply = {who: 'parson', text: ''};
+        transcript.push(reply);
+        busy = true; inp.disabled = true; draw();
+        var msgs = transcript.slice(0, -1).map(function(m) { return {role: m.who == 'user' ? 'user' : 'assistant', content: m.text}; });
+        fetch('/' + nom + '/chat.sse', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({messages: msgs})})
+        .then(function(resp) {
+          if (!resp.ok) { reply.text = '(' + nom + ' is asleep)'; return; }
+          var reader = resp.body.getReader(), dec = new TextDecoder(), buf = '';
+          function pump() {
+            return reader.read().then(function(r) {
+              if (r.done) return;
+              buf += dec.decode(r.value, {stream: true});
+              var lines = buf.split('\\n'); buf = lines.pop();
+              lines.forEach(function(l) {
+                if (l.indexOf('data: ') != 0) return;
+                var d = l.substr(6); if (d == '[DONE]') return;
+                try { var j = JSON.parse(d); var t = j.choices && j.choices[0].delta && j.choices[0].delta.content; if (t) { reply.text += t; draw(); } } catch (e) {}
+              });
+              return pump();
+            });
+          }
+          return pump();
+        })
+        .catch(function() { reply.text = reply.text || '(' + nom + ' wandered off)'; })
+        .then(function() { busy = false; inp.disabled = false; draw(); inp.focus(); });
+      }
+      inp.addEventListener('keydown', function(e) { if (e.key == 'Enter') { e.preventDefault(); send(); } });
+      inp.focus();
+      draw();
+    })();
+    </script>
+      </body>
+    </html>
+END
 
 } elsif ($func eq 'gogh') {
 
@@ -462,7 +623,7 @@ if ($nomext eq "png") {
       <link rel='canonical' href='https://peaple.io/$nom/gogh'>
 
       </head>
-      <body bgcolor="#ffffff">
+      <body bgcolor="#000000" text="#ffffff" link="#9999ff" vlink="#bb99ff">
         $html::header
         $subhead
 
@@ -524,7 +685,7 @@ if ($nomext eq "png") {
     </script>
     </head>
   
-    <body bgcolor="#ffffff" onload="onl()">
+    <body bgcolor="#000000" text="#ffffff" link="#9999ff" vlink="#bb99ff" onload="onl()">
 
     $html::header
     $subhead
@@ -666,7 +827,7 @@ if ($nomext eq "png") {
     </script>
     </head>
   
-    <body bgcolor="#ffffff" onload="onl()">
+    <body bgcolor="#000000" text="#ffffff" link="#9999ff" vlink="#bb99ff" onload="onl()">
 
     $html::header
     $subhead
@@ -682,7 +843,7 @@ if ($nomext eq "png") {
               </td>
               <td style="width: 4px"></td>
               <td valign="center">
-                <img class="button" src="https://fontasy.io/$html::phont.png?txt=addfren&chop=0&dim=8" align="bottom" onClick="addfren(frenbuf.value)">
+                <img class="button" src="$html::fontasy$html::phont.png?txt=addfren&chop=0&dim=8" align="bottom" onClick="addfren(frenbuf.value)">
               </td></tr></table>
             </div>
           </td></tr></table>
@@ -732,10 +893,10 @@ if ($nomext eq "png") {
             <tr><td>
               <table>
                 <tr><td align=right height="36">
-                  <img id="gotobutton" style="outline: 3px solid #00ff00" src="https://fontasy.io/$html::phont.png?txt=goto&chop=0&dim=8" onclick="clicktool('goto')">
+                  <img id="gotobutton" style="outline: 3px solid #00ff00" src="$html::fontasy$html::phont.png?txt=goto&chop=0&dim=8" onclick="clicktool('goto')">
                 </td></tr>
                 <tr><td align=right height="36">
-                  <img id="breadbutton" class="button" src="https://fontasy.io/$html::phont.png?txt=bread&chop=0&dim=8" onclick="clicktool('bread')">
+                  <img id="breadbutton" class="button" src="$html::fontasy$html::phont.png?txt=bread&chop=0&dim=8" onclick="clicktool('bread')">
                 </td></tr>
               </table>
             </td></tr>
@@ -861,7 +1022,7 @@ if ($nomext eq "png") {
       }
     </script>
 
-    <body bgcolor="#ffffff" onload="onl()">
+    <body bgcolor="#000000" text="#ffffff" link="#9999ff" vlink="#bb99ff" onload="onl()">
     $html::header
     $subhead
 
@@ -882,7 +1043,7 @@ if ($nomext eq "png") {
             </td>
             <td style="width: 4px"></td>
             <td valign="center">
-              <img class="button" src="https://fontasy.io/$html::phont.png?txt=addpal&chop=0&dim=8" align="bottom" onClick="addpal(palbuf.value)">
+              <img class="button" src="$html::fontasy$html::phont.png?txt=addpal&chop=0&dim=8" align="bottom" onClick="addpal(palbuf.value)">
             </td></tr></table>
           </div>
 
@@ -1274,7 +1435,7 @@ if ($nomext eq "png") {
     
     </head>
     
-    <body bgcolor="#ffffff">
+    <body bgcolor="#000000" text="#ffffff" link="#9999ff" vlink="#bb99ff">
     
     $html::header
     $subhead
@@ -1295,11 +1456,11 @@ if ($nomext eq "png") {
     
     <table cellspacing=4 cellpadding=4><tr>
     <td>
-      <img src="https://fontasy.io/$html::phont.png?txt=capture&chop=0&dim=8" width='112' height='24' align="bottom" onClick="startvid()" id="capbutton"/>
+      <img src="$html::fontasy$html::phont.png?txt=capture&chop=0&dim=8" width='112' height='24' align="bottom" onClick="startvid()" id="capbutton"/>
     </td>
     <td>
     <label id=uplab for="fileupload" style="outline: 3px solid blue; display: inline-block; cursor: pointer">
-      <img src="https://fontasy.io/$html::phont.png?txt=upload&chop=0&dim=8" width='96' height='24' align="bottom" id="uploadbutton"/>
+      <img src="$html::fontasy$html::phont.png?txt=upload&chop=0&dim=8" width='96' height='24' align="bottom" id="uploadbutton"/>
     </label>
     <input id="fileupload" style="display: none" type="file" onChange="upfile()"/>
     </td>
@@ -1319,10 +1480,10 @@ if ($nomext eq "png") {
     
           <div id="pqrdiv" style="display: none">
     <table cellspacing=4 cellpadding=4><tr>
-    <td><img src="https://fontasy.io/mork.png?txt=p&chop=1&dim=8&fg=ffffff&bg=000000" align="bottom" style="outline: 3px solid blue" onClick="clickp()" id="pbutton"/></td>
-    <td><img src="https://fontasy.io/mork.png?txt=q&chop=1&dim=8&fg=ffffff&bg=000000" align="bottom" style="outline: 3px solid blue" onClick="clickq()" id="qbutton"/></td>
-    <td><img src="https://fontasy.io/mork.png?txt=r&chop=1&dim=8&fg=ffffff&bg=000000" align="bottom" style="outline: 3px solid blue" onClick="clickr()" id="rbutton"/></td>
-    <td><img src="https://fontasy.io/$html::phont.png?txt=auto&chop=0&dim=8" align="bottom" style="outline: 3px solid blue" onClick="clickauto()" id="autobutton"/></td>
+    <td><img src="${html::fontasy}mork.png?txt=p&chop=1&dim=8&fg=ffffff&bg=000000" align="bottom" style="outline: 3px solid blue" onClick="clickp()" id="pbutton"/></td>
+    <td><img src="${html::fontasy}mork.png?txt=q&chop=1&dim=8&fg=ffffff&bg=000000" align="bottom" style="outline: 3px solid blue" onClick="clickq()" id="qbutton"/></td>
+    <td><img src="${html::fontasy}mork.png?txt=r&chop=1&dim=8&fg=ffffff&bg=000000" align="bottom" style="outline: 3px solid blue" onClick="clickr()" id="rbutton"/></td>
+    <td><img src="$html::fontasy$html::phont.png?txt=auto&chop=0&dim=8" align="bottom" style="outline: 3px solid blue" onClick="clickauto()" id="autobutton"/></td>
     </tr></table>
     <script>window.posetool = 'auto';</script>
           </div>
@@ -1511,7 +1672,7 @@ if ($nomext eq "png") {
     </script>
     </head>
     
-    <body bgcolor="#ffffff" onload="onl()">
+    <body bgcolor="#000000" text="#ffffff" link="#9999ff" vlink="#bb99ff" onload="onl()">
     $html::header
     $subhead   
 
@@ -1637,7 +1798,7 @@ if ($nomext eq "png") {
     </script>
     </head>
     
-    <body bgcolor="#ffffff" onload="onload()">
+    <body bgcolor="#000000" text="#ffffff" link="#9999ff" vlink="#bb99ff" onload="onload()">
 
     $html::header
     $subhead

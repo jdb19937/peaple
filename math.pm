@@ -17,7 +17,10 @@ sub matmul3 {
 
 sub getaff {
   my ($px1, $py1, $qx1, $qy1, $rx1, $ry1) = @_;
-  my ($px2, $py2, $qx2, $qy2, $rx2, $ry2) = (48, 64, 80, 64, 64, 96);
+  # canonical marker positions in the 128x128 crop, measured on the mean of 4000 FFHQ-256 faces (2026-11-01):
+  # pupil centers (96,119),(160,119) and the lip line (128,187) at 256, halved; the old (48,64),(80,64),(64,96)
+  # were for the earlier dataset and the interim (.,60),(.,60),(64,89) put the mouth between nose and lip
+  my ($px2, $py2, $qx2, $qy2, $rx2, $ry2) = (48, 59.5, 80, 59.5, 64, 93.5);
   
   my $b = [
     [$px2, $qx2, $rx2],

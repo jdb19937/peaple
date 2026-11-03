@@ -4,73 +4,54 @@ use visage;
 use nomgen;
 
 use IO::Socket::INET;
+use Digest::SHA qw(sha256_hex);
 use Digest::SHA qw(sha256);
 use Time::HiRes qw(time);
 use POSIX qw(pow);
 
 sub new {
   my ($p, $genhost, $enchost) = @_;
-  $genhost //= "localhost:4444";
-  $enchost //= "localhost:4445";
+  $genhost //= $ENV{PEAPLE_GENHOST} // "localhost:4444";
+  $enchost //= $ENV{PEAPLE_ENCHOST} // "localhost:4445";
 
-  open(my $log, "+<", "/var/www/html/perl/log.dat") or die;
+  my $root = $ENV{PEAPLE_ROOT} // "/var/www/html/perl";
+  # visage store: one 16 KB record per nom in $root/visages/<2 hex of sha256(nom)>/<nom>.vis, touched on every
+  # load so devserver.py's hourly sweep can drop the least recently used beyond PEAPLE_VISAGE_CAP.  Replaced the
+  # append-only log.dat that every CGI request re-indexed (3 s per request at 425k records) and that grew forever.
+  my $vdir = "$root/visages";
+  -d $vdir or mkdir($vdir) or die "$vdir: $!";
   my $this = bless {
     genhost   => $genhost,
     gens      => undef,
     enchost   => $enchost,
     encs      => undef,
-    log       => $log,
-    ind       => { },
-    off       => 0,
+    vdir      => $vdir,
   }, $p;
 
-  $this->slurp;
   $this->reconnectgen;
   $this->reconnectenc;
 
   $this->{dan} = $this->load_visage('synthetic_dan_brumleve');
 
-  {
-    my $oldfh = select($log);
-    $| = 1;
-    select($oldfh);
-  }
-
   $this
 }
 
+sub _vpath {
+  my ($this, $nom) = @_;
+  my $d = $this->{vdir} . '/' . substr(sha256_hex($nom), 0, 2);
+  -d $d or mkdir($d);
+  "$d/$nom.vis"
+}
+
 sub slurp {
-  my $this = shift;
-
-  my $log = $this->{log};
-  my $off = $this->{off};
-
-  seek($log, $off << 14, 0);
-  local $/ = \16384;
-
-  my $t0 = time;
-
-  while (defined(my $pkt = <$log>)) {
-    length($pkt) == 16384 or die;
-    my $padnom = substr($pkt, 0, 32);
-    substr($padnom, 31, 1) eq "\0" or die;
-    my $nom = $padnom;
-    $nom =~ s/\0+$//s;
-
-    $this->{ind}->{$nom} = $off;
-    ++$off;
-  }
-
-  my $t1 = time;
-  my $dt = $t1 - $t0;
-  warn "slurp took $dt seconds";
-
-  $this->{off} = $off;
+  # the visage store is a directory now; nothing to index
+  1
 }
 
 my @goodnom;
 {
-  open(my $fp, "< /var/www/html/perl/goodnoms.txt") or die;
+  my $root = $ENV{PEAPLE_ROOT} // "/var/www/html/perl";
+  open(my $fp, "< $root/goodnoms.txt") or die;
   while (<$fp>) {
     chomp;
     push @goodnom, $_;
@@ -98,40 +79,38 @@ sub pick {
 sub load_visage {
   my ($this, $nom, $kid, $which) = @_;
 
-  my $log = $this->{log};
-  my $off = $this->{ind}->{$nom};
-  if (!defined($off)) {
-    $this->slurp;
-    $off = $this->{ind}->{$nom};
-
-    if (!defined($off)) {
-      my @vec = $this->vecgen($nom, $kid, $which);
-  
-      my $vis = new visage
-        nom	=> $nom,
-        vec	=> \@vec,
-        gen	=> defined($kid) ? 1 + $kid->{gen} : 0,
-        kids	=> defined($kid) ? [$kid->{nom}] : [ ],
-        frens	=> ['synthetic_dan_brumleve'],
-        ;
-
-      my $p0 = $vis->pnomgen(0);
-      my $p1 = $vis->pnomgen(1);
-      $vis->{parens} = [$p0, $p1];
-
-      if (defined($kid)) {
-        $this->save_visage($vis);
-      }
-
-      return $vis;
-    }
+  my $fn = $this->_vpath($nom);
+  my $pkt;
+  if (open(my $fp, '<', $fn)) {
+    binmode $fp;
+    local $/ = \16384;
+    $pkt = <$fp>;
+    close($fp);
+    utime(undef, undef, $fn);   # LRU touch
   }
 
-  seek($log, $off << 14, 0);
-  local $/ = \16384;
-  my $pkt = <$log>;
+  if (!defined($pkt) || length($pkt) != 16384) {
+  my @vec = $this->vecgen($nom, $kid, $which);
+  
+  my $vis = new visage
+    nom	=> $nom,
+    vec	=> \@vec,
+    gen	=> defined($kid) ? 1 + $kid->{gen} : 0,
+    kids	=> defined($kid) ? [$kid->{nom}] : [ ],
+    frens	=> ['synthetic_dan_brumleve'],
+    ;
 
-  length($pkt) == 16384 or die;
+  my $p0 = $vis->pnomgen(0);
+  my $p1 = $vis->pnomgen(1);
+  $vis->{parens} = [$p0, $p1];
+
+  if (defined($kid)) {
+    $this->save_visage($vis);
+  }
+
+  return $vis;
+  }
+
   my $padnom = substr($pkt, 0, 32);
   substr($padnom, 31, 1) eq "\0" or die;
   my $vnom = $padnom;
@@ -207,16 +186,6 @@ sub save_visage {
   length($nom) > 0 or die "no nom";
   my $vec = pack('d*', @{$vis->{vec}});
 
-  my $log = $this->{log};
-  my $off = $this->{ind}->{$nom};
-  if (!defined($off)) {
-    $this->slurp;
-    $off = $this->{ind}->{$nom};
-    if (!defined($off)) {
-      $off = $this->{off};
-    }
-  }
-
   length($nom) < 32 or die;
   my $padnom = $nom . ("\0" x (32 - length($nom)));
   my $pkt = $padnom;
@@ -257,14 +226,14 @@ sub save_visage {
   $poff <= 16384 or die;
   $pkt .= ("\0" x (16384 - $poff));
 
-  seek($log, $off << 14, 0);
-  print $log $pkt;
-
-  $this->{ind}->{$nom} = $off;
-
-  if ($off == $this->{off}) {
-    ++$this->{off};
-  }
+  # write whole, then rename: readers never see a partial record and concurrent CGIs cannot interleave
+  my $fn = $this->_vpath($nom);
+  my $tmp = "$fn.$$.tmp";
+  open(my $fp, '>', $tmp) or die "$tmp: $!";
+  binmode $fp;
+  print $fp $pkt;
+  close($fp) or die "$tmp: $!";
+  rename($tmp, $fn) or die "rename $tmp: $!";
 
   1
 }
@@ -409,8 +378,13 @@ sub getpng {
   $dim //= 512;
   $dev //= 0;
 
-  my $stop = {128 => -3, 256 => -2, 512 => -1, 1024 => 0}->{$dim};
+  # each generator stage past the first doubles resolution; PEAPLE_MAXDIM is
+  # the output size of the full served chain (1024 for the original 4-stage one)
+  my $maxdim = $ENV{PEAPLE_MAXDIM} // 1024;
+  my $stop = {128 => 0, 256 => 1, 512 => 2, 1024 => 3}->{$dim};
   die "bad dim $dim" unless defined $stop;
+  $stop -= {128 => 0, 256 => 1, 512 => 2, 1024 => 3}->{$maxdim};
+  $stop = 0 if $stop > 0;
 
   my @vec = @{$vis->{vec}};
   if ($mul != 1) {
@@ -483,7 +457,10 @@ sub vecgen {
     while (@v < 1536) {
       $sha = sha256($sha);
       for (unpack('C32', $sha)) {
-        $v[$i] = (($which + $_) % 2 ? $cvis->{vec}->[$i] : $pvec[$i]);
+        # a parent copies this fraction of the kid's coordinates (the rest come from its own nom).  Was 1/2 for the
+        # old generator, which used the latent nearly linearly; gan14's mapping net turns a half-shared z into a
+        # w-cosine of ~0.4 (strangers), 3/4 gives ~0.6 (loosely related), 7/8 ~0.8 (clones).  $which rotates the mask.
+        $v[$i] = ((($_ + 64 * ($which // 0)) % 256) < 192 ? $cvis->{vec}->[$i] : $pvec[$i]);
         ++$i;
       }
     }
@@ -512,6 +489,94 @@ sub vecgen {
 
     return @v;
   }
+}
+
+
+# --- autoposer: default marker positions for a fresh upload, from the poser server (ffhq.proj/poser.ctx, port 4447) ---
+# the net regresses the three markers of a 128x128 frame; like the old makemore Autoposer it runs twice: once on the
+# letterboxed upload, then on the upload warped to the canonical crop by the first guess (small residual, best accuracy)
+
+sub getpose {
+  my ($this, $rgb) = @_;
+  length($rgb) == 128 * 128 * 3 or return undef;
+  my $host = $ENV{PEAPLE_POSEHOST} // "localhost:4447";
+  my $out = eval {
+    my $s = IO::Socket::INET->new(PeerAddr => $host, Timeout => 2) or die "no poser server";
+    my $inp = pack('d*', map { ($_ + 0.5) / 256.0 } unpack 'C*', $rgb);
+    print $s (("\0" x 256) . $inp);
+    local $/ = \48;
+    my $r = <$s>;
+    defined($r) && length($r) == 48 or die "short poser reply";
+    $r
+  };
+  if ($@) { warn "poser: $@"; return undef }
+  [map { $_ * 128.0 } unpack 'd6', $out]
+}
+
+# rgb bytes of a png warped by a forward affine (convert AffineProjection order: sx,rx,ry,sy,tx,ty) into 128x128
+sub _warp128 {
+  my ($fn, @aff) = @_;
+  my $aff = join(',', @aff);
+  open(my $fp, "convert $fn -virtual-pixel mirror -define distort:viewport=128x128+0+0 -distort AffineProjection '$aff' +repage +set comment ppm:- |") or return undef;
+  my $rgb;
+  {
+    local $/ = "\n";
+    my $l = <$fp>; $l eq "P6\n" or return undef;
+    $l = <$fp>; $l eq "128 128\n" or return undef;
+    $l = <$fp>; $l eq "255\n" or return undef;
+    undef local $/;
+    $rgb = <$fp>;
+  }
+  close($fp);
+  $rgb
+}
+
+# apply the inverse of a forward affine (sx,rx,ry,sy,tx,ty) to a point: dest -> source
+sub _aff_unmap {
+  my ($x, $y, $sx, $rx, $ry, $sy, $tx, $ty) = @_;
+  my $det = $sx * $sy - $rx * $ry;
+  return undef if abs($det) < 1e-12;
+  $x -= $tx; $y -= $ty;
+  (($sy * $x - $ry * $y) / $det, (-$rx * $x + $sx * $y) / $det)
+}
+
+sub autopose {
+  my ($this, $fn) = @_;
+  my ($w, $h) = split ' ', `identify -format '%w %h' $fn 2>/dev/null`;
+  $w && $h or return undef;
+
+  # pass 1: letterbox into 128x128
+  my $f = 128.0 / ($w > $h ? $w : $h);
+  my @aff1 = ($f, 0, 0, $f, (128 - $f * $w) / 2, (128 - $f * $h) / 2);
+  my $rgb = _warp128($fn, @aff1) or return undef;
+  my $m = $this->getpose($rgb) or return undef;
+  my @p1;
+  for my $i (0, 2, 4) {
+    my ($x, $y) = _aff_unmap($m->[$i], $m->[$i + 1], @aff1);
+    push @p1, $x, $y;
+  }
+
+  # pass 2: warp by the first guess into the canonical crop, predict the residual, map back
+  my @aff2 = math::getaff(@p1);
+  my @p2;
+  if ($rgb = _warp128($fn, @aff2) and $m = $this->getpose($rgb)) {
+    for my $i (0, 2, 4) {
+      my ($x, $y) = _aff_unmap($m->[$i], $m->[$i + 1], @aff2);
+      push @p2, $x, $y;
+    }
+    my $guard = $w / 16.0;
+    for my $i (0 .. 5) {
+      if (abs($p2[$i] - $p1[$i]) > $guard) { @p2 = (); last }
+    }
+  }
+  my @p = @p2 ? @p2 : @p1;
+  for my $i (0 .. 5) {
+    my $lim = ($i % 2 ? $h : $w) - 1;
+    $p[$i] = 0 if $p[$i] < 0;
+    $p[$i] = $lim if $p[$i] > $lim;
+    $p[$i] = int($p[$i] + 0.5);
+  }
+  @p
 }
 
 1

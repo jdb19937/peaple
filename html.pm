@@ -1,6 +1,7 @@
 package html;
 
-our $phont = 'phont4';
+our $phont = 'mork';
+our $fontasy = $ENV{PEAPLE_FONTASY} // '$fontasy';
 # our $phont = 'chamscrabold';
 # our $phont = 'asdf';
 
@@ -33,10 +34,10 @@ our $header = qq{
     <tr>
       <td style='font-size: 40px'>[
   
-        <a href="/"><img class="button" height="24" width="64" src="https://fontasy.io/$phont.png?txt=rand&dim=8&chop=0"/></a>
-        | <a href="/new"><img class="button" height="24" width="48" src="https://fontasy.io/$phont.png?txt=new&dim=8&chop=0"/></a>
-        | <img class="redbutton" height="24" width="48" src="https://fontasy.io/$phont.png?txt=top&dim=8&chop=0" onclick="alert('returning soon')"/>
-        | <img class="redbutton" height="24" width="96" src="https://fontasy.io/$phont.png?txt=search&dim=8&chop=0" onclick="alert('coming soon')"/>
+        <a href="/"><img class="button" height="24" width="64" src="$fontasy$phont.png?txt=rand&dim=8&chop=0"/></a>
+        | <a href="/new"><img class="button" height="24" width="48" src="$fontasy$phont.png?txt=new&dim=8&chop=0"/></a>
+        | <img class="redbutton" height="24" width="48" src="$fontasy$phont.png?txt=top&dim=8&chop=0" onclick="alert('returning soon')"/>
+        | <img class="redbutton" height="24" width="96" src="$fontasy$phont.png?txt=search&dim=8&chop=0" onclick="alert('coming soon')"/>
   
       ]</td>
   
@@ -46,7 +47,7 @@ our $header = qq{
             <tr>
               <td style="font-size: 40px">
                 [
-                  <a href="/logout"><img class="button" height="24" width="96" src="https://fontasy.io/$phont.png?txt=logout&dim=16"/></a>
+                  <a href="/logout"><img class="button" height="24" width="96" src="$fontasy$phont.png?txt=logout&dim=16"/></a>
                 ]
   
                 <!--
@@ -63,7 +64,7 @@ our $header = qq{
                 [
               </td>
   
-              <td align="right"><img height="24" width="48" src="https://fontasy.io/$phont.png?txt=nom&dim=8"/></script></td>
+              <td align="right"><img height="24" width="48" src="$fontasy$phont.png?txt=nom&dim=8"/></script></td>
               <td>
                 <input id="nomlogin" type="text" style="font-family: monospace; font-size: medium" size=32 maxlength=32 onClick="this.value=''" value=""/>
               </td>
@@ -71,13 +72,13 @@ our $header = qq{
               <td width="8"></td>
 
               <td rowspan="2" valign="center" style="font-size: 40px">
-                <img class="redbutton" height="24" width="80" src="https://fontasy.io/$phont.png?txt=login&dim=8&chop=0" onclick="alert('returning soon')"/>
+                <img class="redbutton" height="24" width="80" src="$fontasy$phont.png?txt=login&dim=8&chop=0" onclick="alert('returning soon')"/>
                 ]
               </td>
             </tr>
             <tr>
               <td align="right">
-                <img height="24" width="64" src="https://fontasy.io/$phont.png?txt=pass&dim=8"/>
+                <img height="24" width="64" src="$fontasy$phont.png?txt=pass&dim=8"/>
               </td>
               <td>
                 <input id="nompass" type="password" style="font-family: monospace; font-size: medium" size=32 maxlength=32 />
@@ -97,18 +98,18 @@ our $header = qq{
     <tr>
       <td align="left"> 
         <table><tr>
-          <td valign="bottom"><img width="288" height="48" src="https://fontasy.io/$phont.png?txt=Peaple.IO&dim=16"></td>
+          <td valign="bottom"><img width="288" height="48" src="$fontasy$phont.png?txt=Peaple.IO&dim=16"></td>
           <td valign="bottom" width="4"></td>
-          <td valign="bottom"><img width="64" height="24" src="https://fontasy.io/$phont.png?txt=v1.2&dim=8"></td>
+          <td valign="bottom"><img width="64" height="24" src="$fontasy$phont.png?txt=v1.2&dim=8"></td>
         </tr></table>
       </td>
       <td valign="top" align="right">
         <a href="https://makemoresoftware.com/">
-          <img src="https://fontasy.io/$phont.png?txt=a+MakeMore+Software+product&dim=8"/>
+          <img src="$fontasy$phont.png?txt=a+MakeMore+Software+product&dim=8"/>
         </a>
           <br/>
         <a href="https://makemoresoftware.com/">
-          <img src="https://fontasy.io/$phont.png?txt=https://makemoresoftware.com/&dim=8"/>
+          <img src="$fontasy$phont.png?txt=https://makemoresoftware.com/&dim=8"/>
         </a>
       </td>
     </tr>
@@ -130,21 +131,22 @@ sub subhead {
     
       <tr>
         <td style='font-size: 40px'>[
-          <a href="/$nom"><img id="buttonwall" height="24" width="64" class="button" src="https://fontasy.io/$phont.png?txt=wall&dim=8&chop=0"/></a> |
-          <a href="/$nom/fam"><img id="buttonfam" height="24" width="48" class="button" src="https://fontasy.io/$phont.png?txt=fam&dim=8&chop=0"/></a> |
-          <a href="/$nom/frens"><img id="buttonfrens" height="24" width="80" class="button" src="https://fontasy.io/$phont.png?txt=frens&dim=8&chop=0"/></a> |
-          <a href="/$nom/xform"><img id="buttonxform" height="24" width="80" class="button" src="https://fontasy.io/$phont.png?txt=xform&dim=8&chop=0"/></a> |
-          <a href="/$nom/enc"><img id="buttonenc" height="24" width="48" class="button" src="https://fontasy.io/$phont.png?txt=enc&dim=8&chop=0"/></a> |
-          <a href="/$nom/grid"><img id="buttongrid" height="24" width="64" class="button" src="https://fontasy.io/$phont.png?txt=grid&dim=8&chop=0"/></a> |
-          <a href="/$nom/mem"><img id="buttonmem" height="24" width="48" class="button" src="https://fontasy.io/$phont.png?txt=mem&dim=8&chop=0"/></a> |
-          <a href="/$nom/gogh"><img id="buttongogh" height="24" width="64" class="button" src="https://fontasy.io/$phont.png?txt=gogh&dim=8&chop=0"/></a> |
-          <a href="https://www.facebook.com/groups/434429760588423/"><img id="buttonfb" height="24" width="32" class="button" src="https://fontasy.io/$phont.png?txt=fb&dim=8&chop=0"/></a> |
-          <a href="mailto:dan\@makemoresoftware.com?subject=$nom"><img id="buttonnote" class="button" height="24" width="64" src="https://fontasy.io/$phont.png?txt=note&dim=8&chop=0"/></a> |
-          <img id="buttonbuy" class="redbutton" height="24" width="48" src="https://fontasy.io/$phont.png?txt=buy&dim=8&chop=0" onclick="alert('coming soon')"/>
+          <a href="/$nom"><img id="buttonwall" height="24" width="64" class="button" src="$fontasy$phont.png?txt=wall&dim=8&chop=0"/></a> |
+          <a href="/$nom/fam"><img id="buttonfam" height="24" width="48" class="button" src="$fontasy$phont.png?txt=fam&dim=8&chop=0"/></a> |
+          <a href="/$nom/frens"><img id="buttonfrens" height="24" width="80" class="button" src="$fontasy$phont.png?txt=frens&dim=8&chop=0"/></a> |
+          <a href="/$nom/xform"><img id="buttonxform" height="24" width="80" class="button" src="$fontasy$phont.png?txt=xform&dim=8&chop=0"/></a> |
+          <a href="/$nom/enc"><img id="buttonenc" height="24" width="48" class="button" src="$fontasy$phont.png?txt=enc&dim=8&chop=0"/></a> |
+          <a href="/$nom/grid"><img id="buttongrid" height="24" width="64" class="button" src="$fontasy$phont.png?txt=grid&dim=8&chop=0"/></a> |
+          <a href="/$nom/mem"><img id="buttonmem" height="24" width="48" class="button" src="$fontasy$phont.png?txt=mem&dim=8&chop=0"/></a> |
+          <a href="/$nom/gogh"><img id="buttongogh" height="24" width="64" class="button" src="$fontasy$phont.png?txt=gogh&dim=8&chop=0"/></a> |
+          <a href="https://www.facebook.com/groups/434429760588423/"><img id="buttonfb" height="24" width="32" class="button" src="$fontasy$phont.png?txt=fb&dim=8&chop=0"/></a> |
+          <a href="mailto:dan\@makemoresoftware.com?subject=$nom"><img id="buttonnote" class="button" height="24" width="64" src="$fontasy$phont.png?txt=note&dim=8&chop=0"/></a> |
+          <a href="/$nom/chat"><img id="buttonchat" height="24" width="64" class="button" src="${fontasy}mork.png?txt=chat&dim=8&chop=0"/></a> |
+          <img id="buttonbuy" class="redbutton" height="24" width="48" src="$fontasy$phont.png?txt=buy&dim=8&chop=0" onclick="alert('coming soon')"/>
         ]</td>
     
         <td align="right"><div id='meepdiv' style="display: none; font-size: 40px">[
-          <img class="button" src="https://fontasy.io/$phont.png?txt=befren&dim=8&chop=0"/></a>
+          <img class="button" src="$fontasy$phont.png?txt=befren&dim=8&chop=0"/></a>
         ]</div></td>
     
       </tr>
