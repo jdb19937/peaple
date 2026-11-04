@@ -485,6 +485,7 @@ if ($nomext eq "png") {
   # drawn from the phont glyph grids client-side so streamed tokens render as they arrive), one-line entry bar below.
   # The reply streams from /$nom/chat.sse (devserver.py -> llama-server) with a persona derived from the nom.
   my $subhead = html::subhead($nom);
+  my $pfont = $nom eq 'makemore_support' ? 'they' : 'titulus';   # the parson's phont; a few specials answer in another
 
   print "Content-Type: text/html\r\n\r\n";
   print <<"END";
@@ -519,7 +520,7 @@ if ($nomext eq "png") {
       var can = document.getElementById('chatcan'), ctx = can.getContext('2d');
       var inp = document.getElementById('chatin');
       var sheets = {};
-      ['mork', 'titulus'].forEach(function(n) {
+      ['mork', '$pfont'].forEach(function(n) {
         var im = new Image(); im.onload = draw; im.src = '/fontasy/' + n + '.png?grid=8'; sheets[n] = im;
       });
       var transcript = [];   // {who: 'user'|'parson', text: '...'}
@@ -555,7 +556,7 @@ if ($nomext eq "png") {
         var rows = [];
         transcript.forEach(function(m, i) {
           if (i) rows.push(null);
-          var ph = m.who == 'user' ? 'mork' : 'titulus';   // you type in mork (learn it by typing), the parson answers in titulus
+          var ph = m.who == 'user' ? 'mork' : '$pfont';   // you type in mork (learn it by typing), the parson answers in titulus
           wrap(m.text || (m.who == 'parson' && busy ? '...' : ''), COLS).forEach(function(l) { rows.push([ph, l]); });
         });
         if (rows.length > ROWS) rows = rows.slice(rows.length - ROWS);
@@ -1682,7 +1683,7 @@ END
     <tr><td align="center">
     <table><tr><td>
         <script>
-          window.mul = 0.35;
+          window.mul = 0.26;   // warpvar(0.26) = 0.35, the grid page's edge-middle deviation
         </script>
     </td></tr></table>
     </td></tr>
@@ -1784,7 +1785,9 @@ END
       } else {
         var x = i % 5;
         var y = Math.floor(i / 5);
-        var dev = Math.sqrt((x - 2) * (x - 2) +  (y - 2) * (y - 2)) / Math.sqrt(3.0);
+        // gan14 is far more sensitive to the logit-space deviation than the old generator: 0.3 of the old scale
+        // (neighbours of the centre ~0.17, edge-middles ~0.35, corners ~0.49); mem's default deviation is the edge-middle value
+        var dev = 0.3 * Math.sqrt((x - 2) * (x - 2) +  (y - 2) * (y - 2)) / Math.sqrt(3.0);
         pic.src = "/$nom.png?dim=256&dev=" + dev + "&rnd=" + randstr();
       }
     }

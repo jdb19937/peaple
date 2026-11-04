@@ -9,8 +9,8 @@ index = sys.argv[3] if len(sys.argv) > 3 else 'index.html'
 
 # extra hostnames behind the same tunnel entry: whole-host redirects, and hosts served from another directory
 HOST_REDIRECTS = {
-    'fordcountychronicle.ai': 'https://peaple.io/fordcountychronicle/chat',
-    'www.fordcountychronicle.ai': 'https://peaple.io/fordcountychronicle/chat',
+    'fordcountychronicle.ai': 'https://peaple.io/paxter/chat',
+    'www.fordcountychronicle.ai': 'https://peaple.io/paxter/chat',
 }
 HOST_DIRS = {
     'contezko.com': '/home/dan/makemore/contezko',

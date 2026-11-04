@@ -8,7 +8,7 @@ text-to-PNG buttons at /fontasy/<anything>.png?txt=...&dim=8.
 Usage: devserver.py [port]   (default 8080)
 Environment it sets for the CGI: PEAPLE_ROOT, PEAPLE_FONTASY (unless already set).
 """
-import os, sys, io, socket, subprocess, urllib.parse
+import os, sys, io, re, socket, subprocess, urllib.parse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -173,6 +173,64 @@ def render_fontasy_grid_png(nom, dim):
     return buf.getvalue()
 
 
+def render_mork_strip(txt, scale):
+    """Text in the mork phont as a PIL image, 2*scale x 3*scale px per character (the old makemore Mork::print at
+    theme mork_<scale>)."""
+    from PIL import Image
+    sheet = fetch_sheet('mork')
+    side = sheet.size[0]
+    u = side // 24
+    cw, ch = 2 * u, 3 * u
+    o = (side - 24 * u) // 2
+    strip = Image.new('RGB', (cw * max(1, len(txt)), ch), (0, 0, 0))
+    for k, c in enumerate(txt):
+        code = ord(c)
+        if code < 0x20 or code > 0x7E:
+            code = 0x7F
+        i = code - 0x20
+        strip.paste(sheet.crop((o + (i % 12) * cw, o + (i // 12) * ch, o + (i % 12 + 1) * cw, o + (i // 12 + 1) * ch)), (k * cw, 0))
+    return strip.resize((2 * scale * max(1, len(txt)), 3 * scale), Image.NEAREST)   # mork is solid blocks: keep them crisp
+
+
+def render_text_strip(txt, scale):
+    """Small fixed-width text on an opaque black bar for the URL stamp: the X11 4x6 bitmap font (pixel-exact, the same
+    4x6 cell as the old mork_2 glyphs at 256), scaled by nearest-neighbour for larger faces.  fonts/4x6.pil was
+    converted from /usr/share/fonts/X11/misc/4x6-ISO8859-1.pcf.gz with PIL's PcfFontFile."""
+    from PIL import Image, ImageDraw, ImageFont
+    font = ImageFont.load(os.path.join(ROOT, 'fonts', '4x6.pil'))
+    im = Image.new('RGB', (4 * len(txt) + 2, 6), (0, 0, 0))
+    ImageDraw.Draw(im).text((1, 0), txt, fill=(255, 255, 255), font=font)
+    k = max(1, scale // 2)
+    return im if k == 1 else im.resize((im.width * k, im.height * k), Image.NEAREST)
+
+
+def stamp_png(png, nom):
+    """The old agent.cc stamp (makemore agent.cc ~2899), restored: unless ?nostamp, a face 128 px or larger gets its
+    own URL printed in mork along the bottom left and, stacked up the bottom right, the render time as <unix>Z and the
+    visage's created and revised ages in seconds.  The old code printed at mork_2 (4x6 px glyphs) on a 256 canvas and
+    warped to the requested size; here the glyph scale follows the native size (2x3 at 128, 4x6 at 256) so it looks
+    the same on screen.  The old 'thum' theme used for the URL at 256 is not on this machine; mork stands in."""
+    from PIL import Image
+    im = Image.open(io.BytesIO(png)).convert('RGB')
+    w, h = im.size
+    if w < 128:
+        return png
+    scale = max(1, w // 128)
+    now = int(time.time())
+    url = render_text_strip('https://peaple.io/' + nom, scale)
+    im.paste(url, (0, h - url.size[1]))
+    # the corner tag: a square of mork, 6 glyphs by 4 rows (24x24 px at 256), reading row by row: the render time as
+    # ten digits and 'Z', then the first 13 hex digits of sha256(nom) -- a pseudo-QR of the hash and a timestamp.
+    # (the old agent.cc stacked three ragged strips: <unix>Z, created age, revised age)
+    tag = '%010dZ' % now + hashlib.sha256(nom.encode()).hexdigest()[:13]
+    rows = [render_mork_strip(tag[i:i + 6], scale) for i in range(0, 24, 6)]
+    for r, strip in enumerate(rows):
+        im.paste(strip, (w - strip.size[0], h - (4 - r) * strip.size[1]))
+    buf = io.BytesIO()
+    im.save(buf, 'PNG')
+    return buf.getvalue()
+
+
 def render_fontasy_png(nom, txt, dim):
     from PIL import Image
     sheet = fetch_sheet(nom)
@@ -223,7 +281,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[1] == 'chat.sse' and self.command == 'POST':
             return self.chat_sse(parts[0])
         if len(parts) == 2 and parts[1] == 'persona.txt':
-            import persona
+            import importlib, persona; importlib.reload(persona)   # pick up edits without a restart
             body = persona.system_prompt(parts[0]).encode('utf-8')
             self.send_response(200); self.send_header('Content-Type', 'text/plain; charset=utf-8')
             self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
@@ -233,7 +291,7 @@ class Handler(BaseHTTPRequestHandler):
     def chat_sse(self, nom):
         """Stream a parson's reply: the client posts {"messages": [...]} (its own user/assistant history), the parson's
         deterministic persona becomes the system prompt, and llama-server's SSE chunks are relayed as they arrive."""
-        import json, http.client, persona
+        import json, http.client, importlib, persona; importlib.reload(persona)   # pick up edits without a restart
         length = int(self.headers.get('Content-Length') or 0)
         try:
             req = json.loads(self.rfile.read(length) or b'{}')
@@ -332,6 +390,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(502, 'bad CGI output (exit %d)' % p.returncode)
         hdrs, payload = out[:sep], out[sep + nl:]
         status = 200
+        m = re.match(r'^/([a-z0-9_]+)\.png$', url.path)
+        if m and payload[:4] == b'\x89PNG' and 'nostamp' not in urllib.parse.parse_qs(url.query):
+            try:
+                payload = stamp_png(payload, m.group(1))
+            except Exception as e:
+                sys.stderr.write('stamp failed: %s\n' % e)
         headers = []
         for line in hdrs.decode('latin-1').splitlines():
             if ':' not in line:

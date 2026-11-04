@@ -444,8 +444,28 @@ again:
   $png;
 }
 
+# noms whose vector is fixed rather than hashed from the name: $root/special/<nom>.vec, 1536 little-endian doubles
+# (paxter.vec = the hash vector of "fordcountychronicle", so the chat librarian wears that face under its own name)
+my %special;
+{
+  my $root = $ENV{PEAPLE_ROOT} // "/var/www/html/perl";
+  for my $fn (glob("$root/special/*.vec")) {
+    my ($nom) = $fn =~ m{/([a-z0-9_]+)\.vec$} or next;
+    open(my $fp, '<', $fn) or next;
+    binmode $fp;
+    local $/;
+    my $raw = <$fp>;
+    close($fp);
+    $special{$nom} = [unpack('d*', $raw)] if length($raw) == 12288;
+  }
+}
+
 sub vecgen {
   my ($this, $nom, $cvis, $which) = @_;
+
+  if (!defined($cvis) && $special{$nom}) {
+    return @{$special{$nom}};
+  }
 
   if (defined($cvis)) {
     my $cnom = $cvis->{nom};
