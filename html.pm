@@ -138,7 +138,7 @@ sub subhead {
           <a href="/$nom/enc"><img id="buttonenc" height="24" width="48" class="button" src="$fontasy$phont.png?txt=enc&dim=8&chop=0"/></a> |
           <a href="/$nom/grid"><img id="buttongrid" height="24" width="64" class="button" src="$fontasy$phont.png?txt=grid&dim=8&chop=0"/></a> |
           <a href="/$nom/mem"><img id="buttonmem" height="24" width="48" class="button" src="$fontasy$phont.png?txt=mem&dim=8&chop=0"/></a> |
-          <a href="/$nom/gogh"><img id="buttongogh" height="24" width="64" class="button" src="$fontasy$phont.png?txt=gogh&dim=8&chop=0"/></a> |
+          <img id="buttongogh" class="redbutton" height="24" width="64" src="$fontasy$phont.png?txt=gogh&dim=8&chop=0" onclick="alert('coming soon')"/> |
           <a href="https://www.facebook.com/groups/434429760588423/"><img id="buttonfb" height="24" width="32" class="button" src="$fontasy$phont.png?txt=fb&dim=8&chop=0"/></a> |
           <a href="mailto:dan\@makemoresoftware.com?subject=$nom"><img id="buttonnote" class="button" height="24" width="64" src="$fontasy$phont.png?txt=note&dim=8&chop=0"/></a> |
           <a href="/$nom/chat"><img id="buttonchat" height="24" width="64" class="button" src="${fontasy}mork.png?txt=chat&dim=8&chop=0"/></a> |
