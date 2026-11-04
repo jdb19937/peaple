@@ -974,7 +974,7 @@ END
 
       var pals = new Array(16);
       var npals = 0;
-      var mul = 0.5;
+      var mul = 0.2;   // fraction of the way to the clicked pal per click (0.5 snapped to the target almost at once)
 
       function addpal(pal) {
         if (pal == '') {
