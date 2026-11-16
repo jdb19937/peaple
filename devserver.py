@@ -8,7 +8,7 @@ text-to-PNG buttons at /fontasy/<anything>.png?txt=...&dim=8.
 Usage: devserver.py [port]   (default 8080)
 Environment it sets for the CGI: PEAPLE_ROOT, PEAPLE_FONTASY (unless already set).
 """
-import os, sys, io, re, socket, subprocess, urllib.parse
+import os, sys, io, re, json, socket, subprocess, urllib.parse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -16,6 +16,8 @@ SCRIPT = os.path.join(ROOT, 'peaple.pl')
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 
 os.environ.setdefault('PEAPLE_ROOT', ROOT)
+sys.path.insert(0, ROOT)
+import social
 os.environ.setdefault('PEAPLE_FONTASY', '/fontasy/')
 os.environ.setdefault('PEAPLE_MAXDIM', '128')   # output size of the served generator chain
 
@@ -45,6 +47,7 @@ def render_text_png(txt, dim):
 import hashlib, struct, socket, threading, time
 FONT_HOST = os.environ.get('PEAPLE_FONTHOST', 'localhost:4446')
 LLM_HOST = os.environ.get('PEAPLE_LLMHOST', 'localhost:8090')   # llama-server for /<nom>/chat.sse
+CHAT_LOG = os.environ.get('PEAPLE_CHATLOG', os.path.expanduser('~/tewel/ffhq.proj/run/chat.jsonl'))   # transcripts, one JSON line per exchange
 _sheet_cache = {}
 _sheet_lock = threading.Lock()
 _inflight = {}                       # nom -> Event, renders in progress (single-flight)
@@ -259,6 +262,55 @@ def render_fontasy_png(nom, txt, dim):
     return buf.getvalue()
 
 
+def run_cgi(method, path, query='', body=b'', headers=None):
+    """Run peaple.pl for one request.  Returns (status, [(header, value)], payload); status 502/504 on a broken run."""
+    headers = headers or {}
+    env = dict(os.environ)
+    env.update({
+        'GATEWAY_INTERFACE': 'CGI/1.1',
+        'REQUEST_METHOD': method,
+        'PATH_INFO': urllib.parse.unquote(path),
+        'QUERY_STRING': query,
+        'SCRIPT_NAME': '',
+        'SERVER_NAME': 'localhost',
+        'SERVER_PORT': str(PORT),
+        'SERVER_PROTOCOL': 'HTTP/1.1',
+        'REMOTE_ADDR': headers.get('X-Peer') or '127.0.0.1',
+        'CONTENT_LENGTH': str(len(body)),
+        'CONTENT_TYPE': headers.get('Content-Type') or '',
+        'HTTP_HOST': headers.get('Host') or 'localhost',
+        'HTTP_COOKIE': headers.get('Cookie') or '',
+        'HTTP_USER_AGENT': headers.get('User-Agent') or '',
+        'HTTP_REFERER': headers.get('Referer') or '',
+        'HTTP_CF_CONNECTING_IP': headers.get('CF-Connecting-IP') or '',
+    })
+    try:
+        p = subprocess.run(['perl', SCRIPT], input=body, env=env, cwd=ROOT, capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return 504, [], b'CGI timeout'
+    if p.stderr:
+        sys.stderr.write(p.stderr.decode('utf-8', 'replace'))
+    out = p.stdout
+    sep = out.find(b'\r\n\r\n')
+    nl = 4
+    if sep < 0:
+        sep = out.find(b'\n\n')
+        nl = 2
+    if sep < 0:
+        return 502, [], p.stderr[-300:] or b'bad CGI output'
+    status, hl = 200, []
+    for line in out[:sep].decode('latin-1').splitlines():
+        if ':' not in line:
+            continue
+        k, v = line.split(':', 1)
+        k, v = k.strip(), v.strip()
+        if k.lower() == 'status':
+            status = int(v.split()[0])
+        elif k.lower() != 'content-length':
+            hl.append((k, v))
+    return status, hl, out[sep + nl:]
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
@@ -278,43 +330,54 @@ class Handler(BaseHTTPRequestHandler):
         if url.path.startswith('/fontasy/') or url.path == '/button.png':
             return self.fontasy(url)
         parts = url.path.strip('/').split('/')
+        if url.path == '/mcp':
+            return self.mcp()
+        m = re.match(r'^/top/(online|activity|likes|likes24)\.json$', url.path)
+        if m:
+            n = urllib.parse.parse_qs(url.query).get('n', ['256'])[0]
+            return self.send_json(social.top_board(m.group(1), int(n) if n.isdigit() else 256), extra=[('Cache-Control', 'no-store')])
         if len(parts) == 2 and parts[1] == 'chat.sse' and self.command == 'POST':
             return self.chat_sse(parts[0])
         if len(parts) == 2 and parts[1] == 'persona.txt':
             import importlib, persona; importlib.reload(persona)   # pick up edits without a restart
-            body = persona.system_prompt(parts[0]).encode('utf-8')
+            # thotz (a nom's own system prompt) is private: only its own logged-in nom gets the real thing here;
+            # everyone else, and ?default=1, gets the hashed personality
+            dflt = urllib.parse.parse_qs(url.query).get('default') or social.cookie_user(self) != parts[0]
+            body = (persona.default_prompt(parts[0]) if dflt else persona.system_prompt(parts[0])).encode('utf-8')
             self.send_response(200); self.send_header('Content-Type', 'text/plain; charset=utf-8')
             self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
             return
         self.cgi(url)
 
+    def send_json(self, obj, status=200, extra=()):
+        body = json.dumps(obj).encode('utf-8')
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        for k, v in extra:
+            self.send_header(k, v)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def chat_sse(self, nom):
-        """Stream a parson's reply: the client posts {"messages": [...]} (its own user/assistant history), the parson's
-        deterministic persona becomes the system prompt, and llama-server's SSE chunks are relayed as they arrive."""
-        import json, http.client, importlib, persona; importlib.reload(persona)   # pick up edits without a restart
+        """Stream a parson's reply: the client posts {"messages": [...]} (its own user/assistant history); social.py
+        runs the exchange (persona prompt, the visitor's login name from the session cookie, tool calls against the
+        site) and this relays spoken text and action lines as OpenAI-style SSE content deltas."""
+        import accesslog
         length = int(self.headers.get('Content-Length') or 0)
         try:
-            req = json.loads(self.rfile.read(length) or b'{}')
-            msgs = [{'role': m['role'], 'content': m['content'][:2000]} for m in req.get('messages', [])
-                    if m.get('role') in ('user', 'assistant') and isinstance(m.get('content'), str)][-24:]
+            msgs = social.clean_history(json.loads(self.rfile.read(length) or b'{}').get('messages'))
         except Exception:
             return self.send_error(400, 'bad request')
-        if not nom.replace('_', '').isalnum():
+        if not nom.replace('_', '').isalnum() or len(nom) > 31:
             return self.send_error(400, 'bad nom')
-        payload = json.dumps({'messages': [{'role': 'system', 'content': persona.system_prompt(nom)}] + msgs,
-                              'stream': True, 'max_tokens': 220, 'temperature': 0.9,
-                              'chat_template_kwargs': {'enable_thinking': False}})
-        host, port = LLM_HOST.split(':')
-        try:
-            conn = http.client.HTTPConnection(host, int(port), timeout=600)
-            conn.request('POST', '/v1/chat/completions', payload, {'Content-Type': 'application/json'})
-            r = conn.getresponse()
-        except Exception as e:
-            sys.stderr.write('chat: llm unavailable (%s)\n' % e)
-            return self.send_error(503, 'the parson is asleep')
-        if r.status != 200:
-            sys.stderr.write('chat: llm status %d %s\n' % (r.status, r.read()[:200]))
-            return self.send_error(502, 'the parson is confused')
+        ip = accesslog.client_ip(self)
+        def sse(text, tool=None):
+            delta = {'content': text}
+            if tool:
+                delta['tool'] = tool      # the browser keeps it and sends it back with the history
+            self.wfile.write(b'data: ' + json.dumps({'choices': [{'index': 0, 'delta': delta}]}).encode() + b'\n\n')
+            self.wfile.flush()
         self.close_connection = True
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
@@ -323,16 +386,50 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Connection', 'close')
         self.end_headers()
         try:
-            while True:
-                line = r.readline()
-                if not line:
-                    break
-                self.wfile.write(line)
-                self.wfile.flush()
+            social.chat_admit(ip)
+        except social.Busy as e:
+            sse('(%s)' % e)
+            self.wfile.write(b'data: [DONE]\n\n')
+            return
+        gen = social.chat_events(nom, msgs, social.cookie_user(self),
+                                 {'ip': ip, 'ua': (self.headers.get('User-Agent') or '-')[:200], 'via': 'web'})
+        try:
+            for ev in gen:
+                sse(ev[1], ev[2] if len(ev) > 2 else None)
+            self.wfile.write(b'data: [DONE]\n\n')
+            self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
-            conn.close()
+            gen.close()
+
+    def mcp(self):
+        """The MCP endpoint (Streamable HTTP, stateless): one JSON-RPC message or batch per POST, answered as JSON."""
+        import accesslog
+        if self.command != 'POST':
+            body = b'peaple.io MCP server: POST JSON-RPC here (Streamable HTTP). Tools: ' + \
+                   ', '.join(t['name'] for t in social.MCP_TOOLS).encode() + b'\n'
+            self.send_response(405); self.send_header('Allow', 'POST'); self.send_header('Content-Type', 'text/plain')
+            self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+            return
+        length = int(self.headers.get('Content-Length') or 0)
+        if length > 1 << 20:
+            return self.send_error(413, 'too large')
+        try:
+            req = json.loads(self.rfile.read(length) or b'null')
+        except ValueError:
+            return self.send_json({'jsonrpc': '2.0', 'id': None, 'error': {'code': -32700, 'message': 'parse error'}}, 400)
+        auth = self.headers.get('Authorization') or ''
+        bearer = auth[7:].strip() if auth[:7].lower() == 'bearer ' else ''
+        ip, ua = accesslog.client_ip(self), (self.headers.get('User-Agent') or '-')[:200]
+        if isinstance(req, list):
+            out = [r for r in (social.mcp_handle(m, bearer, ip, ua) for m in req[:16]) if r is not None]
+        else:
+            out = social.mcp_handle(req, bearer, ip, ua)
+        if out is None or out == []:
+            self.send_response(202); self.send_header('Content-Length', '0'); self.end_headers()
+            return
+        self.send_json(out)
 
     def fontasy(self, url):
         q = urllib.parse.parse_qs(url.query)
@@ -357,63 +454,24 @@ class Handler(BaseHTTPRequestHandler):
     def cgi(self, url):
         length = int(self.headers.get('Content-Length') or 0)
         body = self.rfile.read(length) if length else b''
-        env = dict(os.environ)
-        env.update({
-            'GATEWAY_INTERFACE': 'CGI/1.1',
-            'REQUEST_METHOD': self.command,
-            'PATH_INFO': urllib.parse.unquote(url.path),
-            'QUERY_STRING': url.query,
-            'SCRIPT_NAME': '',
-            'SERVER_NAME': 'localhost',
-            'SERVER_PORT': str(PORT),
-            'SERVER_PROTOCOL': 'HTTP/1.1',
-            'REMOTE_ADDR': self.client_address[0],
-            'CONTENT_LENGTH': str(length),
-            'CONTENT_TYPE': self.headers.get('Content-Type') or '',
-            'HTTP_HOST': self.headers.get('Host') or 'localhost',
-            'HTTP_COOKIE': self.headers.get('Cookie') or '',
-        })
-        try:
-            p = subprocess.run(['perl', SCRIPT], input=body, env=env, cwd=ROOT,
-                               capture_output=True, timeout=120)
-        except subprocess.TimeoutExpired:
-            return self.send_error(504, 'CGI timeout')
-        if p.stderr:
-            sys.stderr.write(p.stderr.decode('utf-8', 'replace'))
-        out = p.stdout
-        sep = out.find(b'\r\n\r\n')
-        nl = 4
-        if sep < 0:
-            sep = out.find(b'\n\n')
-            nl = 2
-        if sep < 0:
-            return self.send_error(502, 'bad CGI output (exit %d)' % p.returncode)
-        hdrs, payload = out[:sep], out[sep + nl:]
-        status = 200
+        hdr = {k: self.headers.get(k) for k in ('Content-Type', 'Host', 'Cookie', 'User-Agent', 'Referer', 'CF-Connecting-IP')}
+        hdr['X-Peer'] = self.client_address[0]
+        status, headers, payload = run_cgi(self.command, url.path, url.query, body, hdr)
+        if status in (502, 504) and not headers:
+            return self.send_error(status, 'CGI failed')
         m = re.match(r'^/([a-z0-9_]+)\.png$', url.path)
-        if m and payload[:4] == b'\x89PNG' and 'nostamp' not in urllib.parse.parse_qs(url.query):
-            try:
-                payload = stamp_png(payload, m.group(1))
-            except Exception as e:
-                sys.stderr.write('stamp failed: %s\n' % e)
-        headers = []
-        for line in hdrs.decode('latin-1').splitlines():
-            if ':' not in line:
-                continue
-            k, v = line.split(':', 1)
-            k, v = k.strip(), v.strip()
-            if k.lower() == 'status':
-                status = int(v.split()[0])
-            elif k.lower() == 'content-length':
-                continue
-            else:
-                headers.append((k, v))
+        if m and status == 200 and payload[:4] == b'\x89PNG':
+            social.count_view(m.group(1), self.headers.get('User-Agent'))   # the /top activity board
+            if 'nostamp' not in urllib.parse.parse_qs(url.query):
+                try:
+                    payload = stamp_png(payload, m.group(1))
+                except Exception as e:
+                    sys.stderr.write('stamp failed: %s\n' % e)
         self.send_response(status)
         for k, v in headers:
             self.send_header(k, v)
         if url.path.endswith('.png') and status == 200 and not any(k.lower() == 'cache-control' for k, _ in headers):
-            # faces are deterministic per URL now; a few minutes at Cloudflare's edge keeps reload storms off the GPU
-            self.send_header('Cache-Control', 'private, no-store')
+            self.send_header('Cache-Control', 'private, no-store')   # user wants no edge caching
         self.send_header('Content-Length', str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -437,13 +495,21 @@ def visage_sweep():
                     elif f.name.endswith('.tmp') and time.time() - f.stat().st_mtime > 600:
                         os.remove(f.path)   # abandoned partial write
             if len(ents) > VISAGE_CAP:
+                # only generated stubs go: never a record with the keep flag (anything somebody made or changed), a password or a wall
+                social.accounts.scan()
                 ents.sort()
-                for _, p in ents[:len(ents) - VISAGE_CAP]:
+                over, gone = len(ents) - VISAGE_CAP, 0
+                for _, p in ents:
+                    if gone >= over:
+                        break
+                    nom = os.path.basename(p)[:-4]
+                    if nom in social.accounts.pinned or social.has_wall(nom) or social.kept(p):
+                        continue
                     try:
-                        os.remove(p)
+                        os.remove(p); gone += 1
                     except OSError:
                         pass
-                sys.stderr.write('visage sweep: %d records, removed %d\n' % (len(ents), len(ents) - VISAGE_CAP))
+                sys.stderr.write('visage sweep: %d records, removed %d\n' % (len(ents), gone))
         except Exception as e:
             sys.stderr.write('visage sweep failed: %s\n' % e)
         time.sleep(600)
@@ -451,6 +517,7 @@ def visage_sweep():
 
 if __name__ == '__main__':
     os.makedirs(VISAGE_DIR, exist_ok=True)
+    social.init(ROOT, run_cgi, LLM_HOST, CHAT_LOG)
     threading.Thread(target=visage_sweep, daemon=True).start()
     print("peaple dev server on port %d, bind %s  (root %s)" % (PORT, os.environ.get("PEAPLE_BIND", "::"), ROOT))
     bind = os.environ.get('PEAPLE_BIND', '::')

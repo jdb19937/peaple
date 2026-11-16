@@ -18,6 +18,12 @@ sub new {
   $arg{frens} //= [ ];
   $arg{parens} //= [ ];
   $arg{kids} //= [ ];
+  # account block (zero in old records): password hash + salt, 32 unused bytes (was owner nom until 2026-11-15), created and last logged-in action times
+  $arg{pass} //= "\0" x 32;
+  $arg{salt} //= "\0" x 32;
+  $arg{owner} //= '';
+  $arg{created} //= 0;
+  $arg{acted} //= 0;
 
   bless \%arg, $p
 }
@@ -109,10 +115,33 @@ sub json {
     gen    => $self->{gen},
     parens => $self->{parens},
     kids   => $self->{kids},
+    locked => $self->has_pass ? 1 : 0,
+    created => $self->{created} + 0,
+    acted  => $self->{acted} + 0,
 #    vec    => $self->{vec},
   };
 
   $json->encode($export)
+}
+
+# passwords, as makemore's Parson did it: no password set means any password is accepted (and the first login sets it)
+sub has_pass {
+  my $self = shift;
+  $self->{pass} ne ("\0" x 32)
+}
+
+sub check_pass {
+  my ($self, $pass) = @_;
+  return 1 unless $self->has_pass;
+  sha256($pass . "\0" . $self->{salt}) eq $self->{pass}
+}
+
+sub set_pass {
+  my ($self, $pass) = @_;
+  my $salt = join '', map chr(int rand 256), 1 .. 32;
+  if (open(my $fp, '<', '/dev/urandom')) { read($fp, $salt, 32); close($fp); }
+  $self->{salt} = $salt;
+  $self->{pass} = sha256($pass . "\0" . $salt);
 }
 
 sub hasfren {

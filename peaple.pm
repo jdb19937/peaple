@@ -105,7 +105,7 @@ sub load_visage {
   $vis->{parens} = [$p0, $p1];
 
   if (defined($kid)) {
-    $this->save_visage($vis);
+    $this->save_visage($vis, 1);   # a stub: generated because a fam page showed it as a paren; the sweep may drop it
   }
 
   return $vis;
@@ -157,12 +157,19 @@ sub load_visage {
     push @kid, $f;
   }
 
+  # account block, 104 bytes after kids (zero padding in records written before 2026-11-15)
+  # the third field held the owner nom until 2026-11-15; now its first byte is the keep flag: \x01 on every record
+  # somebody made or changed (bread, xform, fren, login, a wall), unset on generated stubs, which is all the sweep drops
+  my ($pass, $salt, $flag, $created, $acted) = unpack('a32 a32 a32 L L', substr($pkt, $poff, 104));
+  $poff += 104;
+
   my $vis = new visage
     nom   => $nom,
     vec   => \@vec,
     gen   => $gen,
     frens => \@fren,
     kids => \@kid,
+    pass => $pass, salt => $salt, keep => (substr($flag, 0, 1) eq "\x01" ? 1 : 0), created => $created, acted => $acted,
     ;
 
   if (@paren == 0) {
@@ -180,7 +187,8 @@ sub load_visage {
 
 
 sub save_visage {
-  my ($this, $vis) = @_;
+  my ($this, $vis, $stub) = @_;
+  $vis->{keep} = 1 unless $stub;
 
   my $nom = $vis->{nom};
   length($nom) > 0 or die "no nom";
@@ -222,6 +230,10 @@ sub save_visage {
   length($fpkt) == 256 or die;
   $pkt .= $fpkt;
   $poff += length($fpkt);
+
+  $vis->{created} ||= int(time);
+  $pkt .= pack('a32 a32 a32 L L', $vis->{pass}, $vis->{salt}, ($vis->{keep} ? "\x01" : ''), $vis->{created}, $vis->{acted} || 0);
+  $poff += 104;
 
   $poff <= 16384 or die;
   $pkt .= ("\0" x (16384 - $poff));

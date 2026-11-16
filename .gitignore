@@ -3,3 +3,13 @@ uploads/
 lib/
 visages/
 __pycache__/
+# runtime state and secrets (2026-11-15 social layer)
+bots.json
+session.key
+feed.jsonl
+news_seen.json
+views.json
+views.sketch
+walls/
+*.tmp
+thotz/
