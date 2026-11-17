@@ -144,7 +144,7 @@ sub header {
         <table><tr>
           <td valign="bottom"><img width="288" height="48" src="$fontasy$phont.png?txt=Peaple.IO&dim=16"></td>
           <td valign="bottom" width="4"></td>
-          <td valign="bottom"><img width="64" height="24" src="$fontasy$phont.png?txt=v2.0&dim=8"></td>
+          <td valign="bottom"><img width="96" height="24" src="$fontasy$phont.png?txt=v2.0.1&dim=8"></td>
         </tr></table>
       </td>
       <td colspan="2" valign="top" align="right">

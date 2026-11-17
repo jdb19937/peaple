@@ -13,6 +13,7 @@ How the boards used to work (makemore agent.cc / zone.cc / parson.hh), and what 
   score, followers   both were about ownership (views of, and number of, parsons you own).  Ownership was dropped
              2026-11-15: a nom either has a password or it does not.  The sweep keeps passworded noms and their kids.
 """
+import urllib.request
 import os, sys, re, json, time, math, hmac, hashlib, struct, threading, base64, http.client, collections
 from array import array
 
@@ -315,9 +316,13 @@ def op_xform(nom, toward, mul=0.2, session=''):
     _cgi_json('POST', '/%s/blend.json' % nom, {'fren': toward, 'mul': mul}, session)
     return {'ok': True, 'nom': nom, 'toward': toward, 'mul': mul, 'picture': 'https://peaple.io/%s.png' % nom}
 
-def op_bread(nom, mate, session='', seed=None, thotz=None):
+def op_bread(nom, mate, session='', seed=None, thotz=None, mix=None):
     nom, mate = _nom(nom), _nom(mate, 'mate')
     form = {'fren': mate}
+    if mix and str(mix).strip():
+        if not check_session(session):
+            raise OpError('setting the kid\'s mix needs a login')
+        form['mix'] = _mix_checked(mix, probe=False)[0]
     if thotz and str(thotz).strip():
         if not check_session(session):
             raise OpError('writing the kid\'s thotz needs a login')
@@ -330,6 +335,56 @@ def op_bread(nom, mate, session='', seed=None, thotz=None):
     v = _cgi_json('POST', '/%s/bread.json' % nom, form, session)
     return {'ok': True, 'kid': v.get('nom'), 'parens': v.get('parens'),
             'url': 'https://peaple.io/%s/fam' % v.get('nom')}
+
+def _mix_checked(text, probe=True):
+    """Validate a mix (and, with probe, see that the model still talks sense under it).  Returns (text, pushes, note)."""
+    import importlib, mix; importlib.reload(mix)
+    try:
+        canon, pushes = mix.check(str(text or ''))
+    except mix.MixError as e:
+        raise OpError(str(e))
+    note = ''
+    if pushes and probe:
+        try:
+            body = {'temperature': 0, 'max_tokens': 40, 'chat_template_kwargs': {'enable_thinking': False},
+                    'steer': mix.steer.request(pushes, unit=mix.catalog()['units'])}
+            bad = 0
+            for q in ('How was your weekend?', 'Tell me about a friend of yours.'):
+                req = urllib.request.Request('http://%s/v1/chat/completions' % LLM_HOST, json.dumps(dict(body, messages=[{'role': 'user', 'content': q}])).encode(),
+                                             {'Content-Type': 'application/json'})
+                with urllib.request.urlopen(req, timeout=240) as r:
+                    bad += mix.broken(json.load(r)['choices'][0]['message'].get('content') or '')
+        except Exception:
+            bad, note = 0, 'saved without the coherence check (the model did not answer)'
+        if bad == 2:
+            raise OpError('that mix leaves you unable to speak sensibly; use smaller weights')
+    return canon, pushes, note
+
+def op_recipes():
+    import importlib, mix; importlib.reload(mix)
+    return {'recipes': [{'id': r['id'], 'name': r['name'], 'effect': r['effect'][:200]} for r in mix.public_catalog()],
+            'how': 'A mix is a sum of weighted recipes, e.g. "0.7 sunny + 0.4 archaic-english". A weight of 1 is the full effect; negative weights push the other way. '
+                   'A raw neuron can be a term too: "3 L32E480N478" (layer, expert 0-511 or S for shared, neuron 0-639; the weight is the dose).'}
+
+def op_get_mix(session):
+    me = check_session(session)
+    if not me:
+        raise OpError('log in first')
+    import importlib, mix; importlib.reload(mix)
+    return {'nom': me, 'mix': mix.text_of(me)}
+
+def op_set_mix(text, session):
+    """Set the logged-in nom's own steering mix (empty text clears it)."""
+    me = check_session(session)
+    if not me:
+        raise OpError('log in first')
+    canon, pushes, note = _mix_checked(text)
+    import mix
+    mix.write(me, canon)
+    r = {'ok': True, 'nom': me, 'mix': canon, 'neurons': mix.steer.code(pushes)}
+    if note:
+        r['note'] = note
+    return r
 
 def op_read_wall(nom, n=10):
     """Newest posts first; each has its replies under it, oldest first (threads are one level deep)."""
@@ -596,8 +651,9 @@ PARSON_TOOLS = [
     _fn('addfren', 'Become frens with someone (mutual).', {'fren': _S}, ['fren']),
     _fn('unfren', 'Stop being frens with someone.', {'fren': _S}, ['fren']),
     _fn('feed', 'What has been happening on the site lately.'),
-    _fn('bread', 'Make a kid with someone. Returns the kid. thotz (optional): the kid\'s system prompt, who it is and how it '
-        'talks, written to it as "You are ..."; pass along what the visitor asked for, or write one yourself.',
+    _fn('my_mix', 'Look up your own steering mix: the recipes (and their neurons) that shape how your mind works. Use it when asked about your mix, steering, recipes or neurons.'),
+    _fn('bread', 'Make a kid with someone. Returns the kid. thotz (optional): the kid\'s system prompt, what it is like and how it '
+        'talks, written to it as "You are a ..." without naming it (its nom is chosen at birth); pass along what the visitor asked for, or write one yourself.',
         {'mate': _S, 'thotz': _S}, ['mate']),
     _fn('xform', 'Morph your own face toward someone else\'s. mul 0 to 1, default 0.2.', {'toward': _S, 'mul': {'type': 'number'}}, ['toward']),
     _fn('look', 'Look at someone: you see their picture, plus frens, parens, kids. Works on the visitor and on yourself.', {'nom': _S}, ['nom']),
@@ -631,10 +687,14 @@ def parson_tool(actor, visitor, name, args):
             f = who('fren'); r = op_unfren(actor, f, make_session(actor, 300)); act = '%s and %s are no longer frens' % (actor, f)
         elif name == 'feed':
             r = op_feed(12); act = '%s checked what is going on' % actor
+        elif name == 'my_mix':
+            import mix
+            t = mix.text_of(actor)
+            r = {'mix': t or 'none', 'neurons': mix.steer.code(mix.pushes(actor)) or 'none'}; act = '%s looked up its mix: %s' % (actor, t or 'none')
         elif name == 'bread':
             m = who('mate')
             # a logged-in visitor owns the kid; otherwise the parson acts as itself (kid unowned would be anonymous: no feed line)
-            r = op_bread(actor, m, make_session(visitor if visitor else actor, 300), thotz=args.get('thotz'))
+            r = op_bread(actor, m, make_session(visitor if visitor else actor, 300), thotz=args.get('thotz'), mix=args.get('mix'))
             act = '%s and %s made %s' % (actor, m, r['kid'])
             if str(args.get('thotz') or '').strip():
                 r['thotz'] = 'written'
@@ -698,10 +758,15 @@ def _release():
         _waiting -= 1
 
 
-def _llm_round(messages):
-    """One streamed completion.  Yields ('text', str) as content arrives, then ('calls', [ {id,name,arguments} ])."""
-    payload = json.dumps({'messages': messages, 'tools': PARSON_TOOLS, 'stream': True, 'max_tokens': 220, 'temperature': 0.9,
-                          'chat_template_kwargs': {'enable_thinking': False}})
+def _steer_from(messages):
+    import mix
+    return mix.steer_from(LLM_HOST, messages[0]['content'], PARSON_TOOLS) if messages and messages[0].get('role') == 'system' else 0
+
+def _llm_round(messages, steer=None, think=False):
+    """One streamed completion.  Yields ('think', str) while the model reasons and ('text', str) as content arrives,
+    then ('calls', [ {id,name,arguments} ])."""
+    payload = json.dumps({'messages': messages, 'tools': PARSON_TOOLS, 'stream': True, 'max_tokens': 220 + (400 if think else 0), 'temperature': 0.9,
+                          'chat_template_kwargs': {'enable_thinking': bool(think)}, **({'steer': steer, 'steer_from': _steer_from(messages)} if steer else {})})
     host, port = LLM_HOST.split(':')
     conn = http.client.HTTPConnection(host, int(port), timeout=600)
     try:
@@ -720,6 +785,8 @@ def _llm_round(messages):
                 d = json.loads(line[6:])['choices'][0].get('delta') or {}
             except (ValueError, KeyError, IndexError):
                 continue
+            if d.get('reasoning_content'):
+                yield ('think', d['reasoning_content'])
             if d.get('content'):
                 yield ('text', d['content'])
             for tc in d.get('tool_calls') or []:
@@ -733,12 +800,14 @@ def _llm_round(messages):
         conn.close()
 
 
-def chat_events(nom, msgs, visitor, meta):
+def chat_events(nom, msgs, visitor, meta, think=False):
     """Generator for one exchange with the parson `nom`: yields ('text', s) for spoken words and ('action', s) for
     things it did with tools (the line is written here from the real result, never by the model).  Call chat_admit()
     first; the slot is released when the generator finishes or is closed.  `meta` (ip, ua, via) goes to the chat log."""
     import importlib, persona; importlib.reload(persona)
     sysmsg = persona.system_prompt(nom) + TOOL_BRIEF
+    import mix; importlib.reload(mix)
+    steer = mix.steer_field(nom)     # the parson's own steering mix (catalog doses are the tool-safe ones)
     # the visitor's name goes last, so the persona + tools prefix stays cached in the model across visitors
     sysmsg += (' In tools use exact noms: yours is %s.' % nom)
     sysmsg += (' The visitor is logged in as %s; when they say "me" they mean %s.' % (visitor, visitor) if visitor else
@@ -751,7 +820,10 @@ def chat_events(nom, msgs, visitor, meta):
                 text, calls = '', []
                 held = ''            # the model must not write its own "[did something]" line: hold a leading bracket
                 holding = True       # span back until it closes, then drop it
-                for kind, val in _llm_round(messages):
+                for kind, val in _llm_round(messages, steer, think):      # think: the chat page's brane button
+                    if kind == 'think':
+                        yield ('think', val)      # shown, not kept: it is not part of what the parson said
+                        continue
                     if kind == 'text':
                         if holding:
                             held += val
@@ -876,7 +948,8 @@ MCP_TOOLS = [
     _tool('bread', 'Bread two parsons: makes a kid mixing both faces. If you are logged in you may write the kid\'s thotz: '
           'its system prompt, the personality it chats with (up to 2000 characters).',
           {'nom': _N, 'mate': _N, 'session': _SES, 'seed': {'type': 'integer', 'description': 'from preview_bread: makes exactly that kid'},
-           'thotz': {'type': 'string', 'description': 'system prompt for the kid, e.g. "You are ... on peaple.io. ..."'}}, ['nom', 'mate']),
+           'thotz': {'type': 'string', 'description': 'system prompt for the kid, e.g. "You are a ...". Do not name the kid: its nom is generated when it is born.'},
+           'mix': {'type': 'string', 'description': 'steering mix for the kid (see recipes), e.g. "0.8 sunny". Needs a login. Without one the kid gets half of each parent\'s mix.'}}, ['nom', 'mate']),
     _tool('unfren', 'End a frenship (both ways).', {'nom': _N, 'fren': _N, 'session': _SES}, ['nom', 'fren']),
     _tool('preview_bread', 'See the kid two parsons would make, without making it. Returns the picture and a seed; '
           'each call without a seed shows a different possible kid.', {'nom': _N, 'mate': _N, 'seed': {'type': 'integer'}}, ['nom', 'mate']),
@@ -903,6 +976,13 @@ MCP_TOOLS = [
            'history': {'type': 'array', 'items': {'type': 'object', 'properties': {'role': {'type': 'string', 'enum': ['user', 'assistant']}, 'content': _S}}}},
           ['nom', 'message']),
     _tool('top', 'The top boards: online (recently active users), activity (most viewed), likes (likes received on wall posts and replies), likes24 (the same, last 24 hours only).', {'board': {'type': 'string', 'enum': ['online', 'activity', 'likes', 'likes24']}, 'n': {'type': 'integer'}}),
+]
+MCP_TOOLS += [
+    _tool('recipes', 'The catalog of steering recipes: named changes to how a parson\'s mind works (a mood, a voice, a belief), each made of a few neurons of the chat model.'),
+    _tool('get_mix', 'Your own steering mix (needs a login). Nobody else can see it.', {'session': _SES}),
+    _tool('set_mix', 'Set your own steering mix: a weighted sum of recipes, e.g. "0.7 sunny + 0.4 archaic-english - 0.5 grandiose", applied to everything your parson says from now on. '
+          'Empty clears it. Refused if it is too strong to speak sensibly under. The bread tool takes a mix for the kid too; without one a kid gets half of each parent\'s.',
+          {'mix': _S, 'session': _SES}, ['mix']),
 ]
 MCP_INSTRUCTIONS = ('peaple.io: every name ("nom") is a generated face with a wall, frens, parens and kids, and a chat persona. '
                     'Log in with any nom and password to become that parson (first login sets the password), then befren, bread, '
@@ -939,7 +1019,7 @@ def mcp_call(name, a, bearer, ip, ua):
     if name == 'xform':
         return text(op_xform(a.get('nom'), a.get('toward'), a.get('mul'), session if me else ''))
     if name == 'bread':
-        return text(op_bread(a.get('nom'), a.get('mate'), session if me else '', a.get('seed'), a.get('thotz')))
+        return text(op_bread(a.get('nom'), a.get('mate'), session if me else '', a.get('seed'), a.get('thotz'), a.get('mix')))
     if name == 'unfren':
         return text(op_unfren(a.get('nom'), a.get('fren'), session if me else ''))
     if name in ('preview_bread', 'preview_xform'):
@@ -962,6 +1042,12 @@ def mcp_call(name, a, bearer, ip, ua):
         return text(op_post_wall(a.get('nom'), a.get('text'), session, a.get('reply_to')))
     if name == 'like':
         return text(op_like(a.get('nom'), a.get('post'), session, a.get('on') is not False))
+    if name == 'recipes':
+        return text(op_recipes())
+    if name == 'get_mix':
+        return text(op_get_mix(session))
+    if name == 'set_mix':
+        return text(op_set_mix(a.get('mix'), session))
     if name == 'top':
         return text(op_top(a.get('board') or 'online', a.get('n')))
     if name == 'chat':
@@ -974,7 +1060,7 @@ def mcp_call(name, a, bearer, ip, ua):
             chat_admit(ip, limit=20)
         except Busy as e:
             raise OpError(str(e))
-        out = ''.join(ev[1] for ev in chat_events(nom, msgs, me, {'ip': ip, 'ua': ua, 'via': 'mcp'}))
+        out = ''.join(ev[1] for ev in chat_events(nom, msgs, me, {'ip': ip, 'ua': ua, 'via': 'mcp'}) if ev[0] != 'think')
         return text(out.strip() or '(%s says nothing)' % nom)
     raise OpError('unknown tool %r' % name)
 

@@ -116,6 +116,21 @@ sub wall_read {   # top-level posts newest first, at most 100, as JSON text with
   } @top
 }
 
+# ---- mix: a nom's steering mix, beside its thotz as <nom>.mix (mix.py reads, checks and applies it).  This file only
+# writes a newborn kid's: what the breading parent gave, or half of each parent's ("~" lets mix.py add a mutation).
+sub mix_write {
+  my ($n, $text) = @_;
+  $text =~ s/[^A-Za-z0-9_.+\-*\@~ ]//g;
+  $text = substr($text, 0, 400);
+  -d "$rootdir/thotz" or mkdir("$rootdir/thotz");
+  my $td = "$rootdir/thotz/" . substr(sha256_hex($n), 0, 2);
+  -d $td or mkdir($td);
+  open(my $fp, '>', "$td/$n.mix.$$.tmp") or return;
+  print $fp $text, "\n";
+  close($fp);
+  rename("$td/$n.mix.$$.tmp", "$td/$n.mix");
+}
+
 # ---- thotz: a nom's own system prompt, $rootdir/thotz/<2 hex of sha256(nom)>/<nom>.txt (persona.py reads it).
 # Private: only the nom itself reads or writes it, except that whoever breads a kid may write the kid's first one.
 sub thotz_path { my $n = shift; "$rootdir/thotz/" . substr(sha256_hex($n), 0, 2) . "/$n.txt" }
@@ -351,13 +366,17 @@ if ($path =~ m#^nooz(\.json)?$#) {
           var ctx = can.getContext('2d');
           ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, can.width, can.height);
           drawText(ctx, '$html::phont', who + '  ' + age(e.t), 0, 0, 0.5);
-          lines.forEach(function(l, i) { drawText(ctx, 'titulus', l, 0, 16 + i * CH, 1); });
+          lines.forEach(function(l, i) { drawText(ctx, '$html::phont', l, 0, 16 + i * CH, 1); });   // in the phont picked in the top bar
           var links = [];
           lines.forEach(function(l, i) {
             var re = /(^|[^A-Za-z0-9_])\@([A-Za-z0-9_]{1,31})/g, m;
             while ((m = re.exec(l))) links.push({x: (m.index + m[1].length) * CW, y: 16 + i * CH, w: (m[2].length + 1) * CW, h: CH, nom: m[2].toLowerCase()});
           });
+          // \@nom links: the one-colour phonts (titulus, they) are redrawn in the page's link blue; mork and ahoy are pictures
+          // in many colours, which that would flatten, so there the name gets a box round it instead, in the blue of the buttons
+          var mono = {titulus: 1, they: 1}['$html::phont'];
           links.forEach(function(k) {
+            if (!mono) { ctx.strokeStyle = '#0000ff'; ctx.lineWidth = 3; ctx.strokeRect(k.x + 1.5, k.y + 1.5, k.w - 3, k.h - 3); return; }   // the buttons' blue
             var d = ctx.getImageData(k.x, k.y, k.w, k.h), q = d.data;
             for (var j = 0; j < q.length; j += 4) { var L = Math.max(q[j], q[j + 1], q[j + 2]); q[j] = q[j + 1] = 0.6 * L; q[j + 2] = L; }
             ctx.putImageData(d, k.x, k.y);
@@ -934,6 +953,13 @@ if ($nomext eq "png") {
   if ($user ne '' && defined $cgi->param('thotz') && $cgi->param('thotz') =~ /\S/) {
     thotz_write($knom, scalar($cgi->param('thotz')));
   }
+  # ... and its first steering mix; otherwise the kid takes half of each parent's
+  {
+    my $m = ($user ne '' && defined $cgi->param('mix')) ? scalar($cgi->param('mix')) : '';
+    $m =~ s/[\@~]//g;
+    $m = "~ 0.5 \@$nom + 0.5 \@$fnom" if $m !~ /[A-Za-z]/;
+    mix_write($knom, $m);
+  }
 
   if ($func eq 'bread.json') {
     my $json = $kvis->json;
@@ -1068,7 +1094,7 @@ if ($nomext eq "png") {
 
 } elsif ($func eq 'wall') {
 
-  # the wall: the picture, then what people wrote on it (walls/*.jsonl), newest first, each with its replies under it oldest first, drawn in titulus glyphs on
+  # the wall: the picture, then what people wrote on it (walls/*.jsonl), newest first, each with its replies under it oldest first, drawn in the selected phont's glyphs on
   # canvases like the chat transcript.  Logged-in users get a one-line post box; the wall's own nom gets delete buttons.
   my $subhead = html::subhead($nom);
   my $posts = '[' . join(',', wall_read($nom)) . ']';
@@ -1190,7 +1216,7 @@ if ($nomext eq "png") {
         var ctx = can.getContext('2d');
         ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, can.width, can.height);
         drawText(ctx, '$html::phont', p.from + '  ' + age(p.t), 0, 0, 0.5);   // who and how long ago, half-size
-        lines.forEach(function(l, i) { drawText(ctx, 'titulus', l, 0, 16 + i * CH, 1); });
+        lines.forEach(function(l, i) { drawText(ctx, '$html::phont', l, 0, 16 + i * CH, 1); });   // in the phont picked in the top bar
         // \@nom is a link to that nom's wall: tinted like a link, and the canvas answers clicks on it
         var links = [];
         lines.forEach(function(l, i) {
@@ -1201,12 +1227,13 @@ if ($nomext eq "png") {
           }
         });
         if (links.length) {
-          links.forEach(function(k) {      // recolor the glyphs to the page's link blue (#9999ff), keeping their brightness
+          // \@nom links: the one-colour phonts (titulus, they) are redrawn in the page's link blue; mork and ahoy are pictures
+          // in many colours, which that would flatten, so there the name gets a box round it instead, in the blue of the buttons
+          var mono = {titulus: 1, they: 1}['$html::phont'];
+          links.forEach(function(k) {
+            if (!mono) { ctx.strokeStyle = '#0000ff'; ctx.lineWidth = 3; ctx.strokeRect(k.x + 1.5, k.y + 1.5, k.w - 3, k.h - 3); return; }   // the buttons' blue
             var d = ctx.getImageData(k.x, k.y, k.w, k.h), q = d.data;
-            for (var j = 0; j < q.length; j += 4) {
-              var L = Math.max(q[j], q[j + 1], q[j + 2]);
-              q[j] = q[j + 1] = 0.6 * L; q[j + 2] = L;
-            }
+            for (var j = 0; j < q.length; j += 4) { var L = Math.max(q[j], q[j + 1], q[j + 2]); q[j] = q[j + 1] = 0.6 * L; q[j + 2] = L; }
             ctx.putImageData(d, k.x, k.y);
           });
           var hit = function(e) {
@@ -1326,9 +1353,61 @@ END
             <textarea id="thotztext" maxlength="2000" rows="14" spellcheck="false" $ro
               style="display: block; margin-top: 8px; width: 1136px; box-sizing: border-box; font-family: monospace; font-size: 18px; padding: 8px; background: #111111; color: #ffffff; border: 2px solid #444444; outline: none; resize: vertical"></textarea>
             $buttons
+            <div style="margin-top: 28px"><img height="24" src="$f$ph.png?txt=steering+mix+%28neurons%29&dim=8&chop=0"/></div>
+            <input id="mixtext" maxlength="400" spellcheck="false" placeholder="none. e.g. 0.7 sunny + 0.4 archaic-english - 0.5 grandiose"
+              style="display: block; margin-top: 8px; width: 1136px; box-sizing: border-box; font-family: monospace; font-size: 18px; padding: 8px; background: #111111; color: #ffffff; border: 2px solid #444444; outline: none"/>
+            <table cellpadding="0" cellspacing="0" style="margin-top: 12px"><tr>
+              <td style="font-size: 40px">[
+                <img id="mixsave" class="button" height="24" width="64" src="$f$ph.png?txt=save&dim=8&chop=0" title="save the mix"/> |
+                <img id="mixclear" class="redbutton" height="24" width="80" src="$f$ph.png?txt=clear&dim=8&chop=0" title="no steering"/>
+              ]</td>
+              <td width="16"></td>
+              <td id="mixmsg" style="font-family: monospace; font-size: 18px; color: #66ff66"></td>
+            </tr></table>
+            <div id="mixrecipes" style="margin-top: 14px; width: 1136px; font-family: monospace; font-size: 15px; line-height: 22px; color: #aaaaaa"></div>
           </td>
         </tr></table>
     <script>
+    (function() {
+      // steering mix: a weighted sum of neuron recipes, applied to everything this parson says (see mix.py)
+      var nom = "$nom";
+      var mt = document.getElementById('mixtext'), mm = document.getElementById('mixmsg');
+      function msay(t, bad) { mm.style.color = bad ? '#ff6666' : '#66ff66'; mm.textContent = t; }
+      function req(method, url, body, cb) {
+        var i = new XMLHttpRequest; i.open(method, url);
+        if (body !== null) i.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        i.onload = function() { var j = null; try { j = JSON.parse(this.responseText); } catch (e) { } cb(j); };
+        i.onerror = function() { cb(null); };
+        i.send(body);
+      }
+      req('GET', '/' + nom + '/mix.json', null, function(j) { if (j && j.ok) mt.value = j.mix || ''; });
+      function msave(text) {
+        msay(text.trim() ? 'trying it out...' : '');
+        req('POST', '/' + nom + '/mix.json', 'text=' + encodeURIComponent(text), function(j) {
+          if (!j) { msay('failed', true); return; }
+          if (!j.ok) { msay(j.error || 'failed', true); return; }
+          mt.value = j.mix || '';
+          msay(j.mix ? (j.note || 'saved: ' + j.neurons) : 'no steering');
+        });
+      }
+      document.getElementById('mixsave').onclick = function() { msave(mt.value); };
+      document.getElementById('mixclear').onclick = function() { msave(''); };
+      mt.addEventListener('keydown', function(e) { if (e.key == 'Enter') msave(mt.value); });
+      mt.addEventListener('input', function() { msay(''); });
+      req('GET', '/recipes.json', null, function(j) {
+        if (!j || !j.recipes) return;
+        var box = document.getElementById('mixrecipes');
+        j.recipes.forEach(function(r) {
+          var row = document.createElement('div'), a = document.createElement('span');
+          a.textContent = r.id; a.style.color = '#9999ff'; a.style.cursor = 'pointer'; a.title = 'add to the mix';
+          a.onclick = function() { mt.value = (mt.value.trim() ? mt.value.trim() + ' + ' : '') + '0.5 ' + r.id; msay(''); mt.focus(); };
+          row.appendChild(a);
+          row.appendChild(document.createTextNode('  ' + r.effect.slice(0, 120)));
+          row.style.whiteSpace = 'nowrap'; row.style.overflow = 'hidden'; row.style.textOverflow = 'ellipsis';
+          box.appendChild(row);
+        });
+      });
+    })();
     (function() {
       var nom = "$nom", mine = $mine;
       var ta = document.getElementById('thotztext'), msg = document.getElementById('thotzmsg');
@@ -1394,6 +1473,9 @@ END
               <input id="chatin" type="text" maxlength="400" autocomplete="off"
                 style="width: 100%; box-sizing: border-box; font-size: 22px; padding: 8px; background: #111111; color: #ffffff; border: 2px solid #444444; outline: none"/>
             </div>
+            <table cellpadding="0" cellspacing="0"><tr><td style="font-size: 40px">[
+              <img id="branebtn" class="button" height="24" width="80" src="$html::fontasy$html::phont.png?txt=brane&dim=8&chop=0" title="brane" style="opacity: 0.4"/>
+            ]</td></tr></table>
           </td>
         </tr></table>
 
@@ -1408,6 +1490,12 @@ END
         var im = new Image(); im.onload = draw; im.src = '/fontasy/' + n + '.png?grid=8'; sheets[n] = im;
       });
       var transcript = [];   // {who: 'user'|'parson', text: '...'}
+      // brane: when on, the parson thinks before answering (the model's thinking mode) and the thinking is drawn dimmed above its reply
+      var brane = false, bb = document.getElementById('branebtn');
+      try { brane = localStorage.getItem('brane') == '1'; } catch (e) { }
+      function showBrane() { bb.style.opacity = brane ? '1' : '0.4'; bb.title = brane ? 'brane on: the parson thinks first, and you see it' : 'brane off: no thinking'; }
+      bb.onclick = function() { brane = !brane; try { localStorage.setItem('brane', brane ? '1' : '0'); } catch (e) { } showBrane(); draw(); };
+      showBrane();
       var busy = false;
 
       function ascii(t) {   // the phonts have the 96 printable ASCII glyphs; fold curly quotes, dashes, accents
@@ -1441,7 +1529,8 @@ END
         transcript.forEach(function(m, i) {
           if (i) rows.push(null);
           var ph = m.who == 'user' ? '$html::phont' : '$pfont';   // you type in mork (learn it by typing), the parson answers in titulus
-          wrap(m.text || (m.who == 'parson' && busy ? '...' : ''), COLS).forEach(function(l) { rows.push([ph, l, m.who != 'user']); });
+          if (m.think && brane) wrap(m.think, COLS).forEach(function(l) { rows.push([ph, l, 'think']); });   // what it thought first, dimmed
+          wrap(m.text || (m.who == 'parson' && busy && !(m.think && brane) ? '...' : ''), COLS).forEach(function(l) { rows.push([ph, l, m.who != 'user']); });
         });
         if (rows.length > ROWS) rows = rows.slice(rows.length - ROWS);
         rows.forEach(function(r, i) {
@@ -1449,7 +1538,7 @@ END
           drawText(r[0], r[1], 0, i * CH);
           if (r[2]) {   // the parson's lines are tinted, so the two sides differ even when both use the same phont
             ctx.globalCompositeOperation = 'multiply';
-            ctx.fillStyle = '#66ffff';
+            ctx.fillStyle = r[2] == 'think' ? '#555577' : '#66ffff';
             ctx.fillRect(0, i * CH, can.width, CH);
             ctx.globalCompositeOperation = 'source-over';
           }
@@ -1465,7 +1554,7 @@ END
         transcript.push(reply);
         busy = true; inp.disabled = true; draw();
         var msgs = transcript.slice(0, -1).map(function(m) { var o = {role: m.who == 'user' ? 'user' : 'assistant', content: m.text}; if (m.tools && m.tools.length) o.tools = m.tools; return o; });
-        fetch('/' + nom + '/chat.sse', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({messages: msgs})})
+        fetch('/' + nom + '/chat.sse', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({messages: msgs, think: brane})})
         .then(function(resp) {
           if (!resp.ok) { reply.text = '(' + nom + ' is asleep)'; return; }
           var reader = resp.body.getReader(), dec = new TextDecoder(), buf = '';
@@ -1477,7 +1566,7 @@ END
               lines.forEach(function(l) {
                 if (l.indexOf('data: ') != 0) return;
                 var d = l.substr(6); if (d == '[DONE]') return;
-                try { var j = JSON.parse(d); var dl = j.choices && j.choices[0].delta; if (dl && dl.tool) { reply.tools.push(dl.tool); if (dl.tool.name == 'xform') document.getElementById('pic').src = '/' + nom + '.png?dim=512&t=' + Date.now(); } var t = dl && dl.content; if (t) { reply.text += t; draw(); } } catch (e) {}
+                try { var j = JSON.parse(d); var dl = j.choices && j.choices[0].delta; if (dl && dl.tool) { reply.tools.push(dl.tool); if (dl.tool.name == 'xform') document.getElementById('pic').src = '/' + nom + '.png?dim=512&t=' + Date.now(); } var th = dl && dl.thinking; if (th) { reply.think = (reply.think || '') + th; draw(); } var t = dl && dl.content; if (t) { reply.text += t; draw(); } } catch (e) {}
               });
               return pump();
             });
@@ -1688,8 +1777,8 @@ END
         if (window.tool == 'goto') {
           location = "/" + fren + "/frens";
         } else if (window.tool == 'bread') {
-          var kt = document.getElementById('kidthotz');
-          post("/$nom/bread.json", "fren=" + escape(fren) + (kt && kt.value.trim() ? "&thotz=" + encodeURIComponent(kt.value) : ""), function(x) {
+          var kt = document.getElementById('kidthotz'), km = document.getElementById('kidmix');
+          post("/$nom/bread.json", "fren=" + escape(fren) + (kt && kt.value.trim() ? "&thotz=" + encodeURIComponent(kt.value) : "") + (km && km.value.trim() ? "&mix=" + encodeURIComponent(km.value) : ""), function(x) {
             var z = JSON.parse(x);
             location = "/" + z.nom + "/fam";
           });
@@ -1806,6 +1895,8 @@ END
     @{[ $user ne '' ? qq{<div id="kidthotzdiv" style="display: none; width: 1280px; margin-top: 12px">
       <textarea id="kidthotz" maxlength="2000" rows="3" spellcheck="false" placeholder="thotz for the kid (its system prompt), optional: write it, then click a fren to bread"
         style="width: 1280px; box-sizing: border-box; font-family: monospace; font-size: 18px; padding: 8px; background: #111111; color: #ffffff; border: 2px solid #444444; outline: none; resize: vertical"></textarea>
+      <input id="kidmix" maxlength="400" spellcheck="false" placeholder="steering mix for the kid, optional, e.g. 0.8 sunny + 0.3 eccentric (recipes are listed on your thotz page); empty: half of each parent's"
+        style="width: 1280px; box-sizing: border-box; margin-top: 6px; font-family: monospace; font-size: 18px; padding: 8px; background: #111111; color: #ffffff; border: 2px solid #444444; outline: none"/>
     </div>} : '' ]}
     </body>
     </html>

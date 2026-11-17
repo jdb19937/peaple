@@ -338,6 +338,22 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(social.top_board(m.group(1), int(n) if n.isdigit() else 256), extra=[('Cache-Control', 'no-store')])
         if len(parts) == 2 and parts[1] == 'chat.sse' and self.command == 'POST':
             return self.chat_sse(parts[0])
+        if url.path == '/recipes.json':
+            return self.send_json(social.op_recipes(), extra=[('Cache-Control', 'no-store')])
+        if len(parts) == 2 and parts[1] == 'mix.json':
+            # a nom's steering mix: private like thotz, only its own logged-in nom reads or sets it
+            me = social.cookie_user(self)
+            if not me or me != parts[0]:
+                return self.send_json({'ok': False, 'error': 'not your mix'}, 403)
+            try:
+                if self.command == 'POST':
+                    form = urllib.parse.parse_qs(self.rfile.read(min(int(self.headers.get('Content-Length') or 0), 4096)).decode('utf-8', 'replace'), keep_blank_values=True)
+                    r = social.op_set_mix(form.get('text', [''])[0], social.make_session(me, 300))
+                else:
+                    r = dict(social.op_get_mix(social.make_session(me, 300)), ok=True)
+            except social.OpError as e:
+                r = {'ok': False, 'error': str(e)}
+            return self.send_json(r, extra=[('Cache-Control', 'no-store')])
         if len(parts) == 2 and parts[1] == 'persona.txt':
             import importlib, persona; importlib.reload(persona)   # pick up edits without a restart
             # thotz (a nom's own system prompt) is private: only its own logged-in nom gets the real thing here;
@@ -366,7 +382,9 @@ class Handler(BaseHTTPRequestHandler):
         import accesslog
         length = int(self.headers.get('Content-Length') or 0)
         try:
-            msgs = social.clean_history(json.loads(self.rfile.read(length) or b'{}').get('messages'))
+            body = json.loads(self.rfile.read(length) or b'{}')
+            msgs = social.clean_history(body.get('messages'))
+            think = bool(body.get('think'))      # the brane button: the parson thinks first, and the thinking is shown
         except Exception:
             return self.send_error(400, 'bad request')
         if not nom.replace('_', '').isalnum() or len(nom) > 31:
@@ -392,9 +410,13 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b'data: [DONE]\n\n')
             return
         gen = social.chat_events(nom, msgs, social.cookie_user(self),
-                                 {'ip': ip, 'ua': (self.headers.get('User-Agent') or '-')[:200], 'via': 'web'})
+                                 {'ip': ip, 'ua': (self.headers.get('User-Agent') or '-')[:200], 'via': 'web'}, think=think)
         try:
             for ev in gen:
+                if ev[0] == 'think':      # the model's reasoning: its own delta field, drawn dimmed, never sent back as history
+                    self.wfile.write(b'data: ' + json.dumps({'choices': [{'index': 0, 'delta': {'thinking': ev[1]}}]}).encode() + b'\n\n')
+                    self.wfile.flush()
+                    continue
                 sse(ev[1], ev[2] if len(ev) > 2 else None)
             self.wfile.write(b'data: [DONE]\n\n')
             self.wfile.flush()

@@ -18,20 +18,29 @@ Limits (the model is not trusted with them; the tool wrappers refuse): 3 actions
 one unprompted post per day on any one human's wall (replies to someone who wrote on your wall are free), xform only
 on yourself, no claim.  Kids breaded by the cast join it, up to CAST_MAX.
 """
-import os, sys, json, time, random, secrets, urllib.request, urllib.error
+import os, sys, re, json, time, random, secrets, urllib.request, urllib.error
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 import persona
+import mix
 
 SITE = os.environ.get('PEAPLE_SITE', 'http://localhost:8080')
 LLM = os.environ.get('PEAPLE_LLMHOST', 'localhost:8090')
+MIX_EVERY = 6          # turns between changes of a bot's own steering mix
+# A mix at full strength wrecks tool calling (the bot writes a line of text and does nothing), so a turn is decided
+# with each recipe held to its calibrated tool-safe dose (mix.expand capped, steer/calibrate.py), and what it then
+# writes on a wall or says in a chat is put into its own words by a second, tool-free call at full strength (voice).
+# voice() goes to a second model server when one is up: every change of steering makes llama-server drop its prompt
+# cache, so a full-strength call in the middle of a turn would make the next round re-read the whole turn (~45 s).
+VOICE_LLM = os.environ.get('PEAPLE_VOICEHOST', 'localhost:8091')
 STATE = os.path.join(ROOT, 'bots.json')
 LOG = os.environ.get('PEAPLE_BOTLOG', os.path.expanduser('~/tewel/ffhq.proj/run/bots.jsonl'))
 SPECIALS = ['paxter', 'makemore_support', 'contezko_engineer']
 CAST_START, CAST_MAX = 24, 48
 PAUSE = (20, 60)            # seconds between turns
 MAX_ACTIONS, KIDS_PER_DAY, NOTES_KEPT = 3, 2, 6
+BREAD_FROM_TURN = 3   # nobody breads before its third turn (kids were having kids within minutes of being born)
 NEWS_BOOST = 1.5      # pick(): someone with news on their wall is treated as having waited this many times longer
 
 
@@ -170,23 +179,23 @@ TOOLS = [
     _fn('like', 'Like a post or a reply, by its tag (like p3).', {'post': _S}, ['post']),
     _fn('addfren', 'Become frens with someone (mutual).', {'fren': _S}, ['fren']),
     _fn('unfren', 'Stop being frens with someone.', {'fren': _S}, ['fren']),
-    _fn('bread', 'Make a kid with someone. You may give the kid its thotz: who it is and how it talks, written to it as '
-        '"You are ...", a few sentences. Without one it gets a personality at random.', {'mate': _S, 'thotz': _S}, ['mate']),
+    _fn('bread', 'Make a kid with someone. You may give the kid its thotz: what it is like and how it talks, written to it as '
+        '"You are a ...", a few sentences. Do not give it a name: its nom is chosen when it is born. Without a thotz it gets a personality at random. '
+        'You may also give it a mix (see recipes), like "0.8 eccentric"; without one it gets half of yours and half of its other paren\'s.', {'mate': _S, 'thotz': _S, 'mix': _S}, ['mate']),
+    _fn('recipes', 'The catalog of mind recipes: named changes to how a mind works here (a mood, a voice, a belief). You and your kids can each carry a mix of them.'),
+    _fn('set_mix', 'Change how your own mind is steered, from now on: a weighted sum of recipes from the catalog, like "0.7 sunny + 0.4 archaic-english - 0.5 grandiose". '
+        'A weight of 1 is the full effect, a negative weight pushes the other way; keep the weights small when you combine several. Empty text clears it. Only you see your mix.', {'mix': _S}, ['mix']),
     _fn('xform', 'Morph your own face toward someone else\'s. mul 0 to 1, default 0.2. Permanent.', {'toward': _S, 'mul': {'type': 'number'}}, ['toward']),
     _fn('chat', 'Say something to another parson and hear the reply.', {'nom': _S, 'message': _S}, ['nom', 'message']),
 ]
-QUIET = ('top', 'rand', 'feed', 'look', 'read_wall', 'like', 'addfren', 'bread')      # these do not use up an action (befren: two a turn; bread: KIDS_PER_DAY)      # looking around does not use up an action
+QUIET = ('top', 'rand', 'feed', 'look', 'read_wall', 'like', 'addfren', 'bread', 'recipes', 'set_mix')      # these do not use up an action (befren: two a turn; bread: KIDS_PER_DAY)      # looking around does not use up an action
 
-ALONE = (' Right now you are alone on peaple.io, not talking to anyone: this is you living your life there. Do what you '
-         'feel like with the tools: see what is going on in the feed, find people on the top boards or at random, look at them, befren them, bread, '
-         'write on walls, reply under posts and like them, answer whoever wrote to you, chat with another parson, morph your face. Befrening and breading are free and do not use up an action: befren the ones you talk with, and make kids '
-         'with frens you like (a kid carries your name and joins in here). A good strategy: bread kids who will like your posts. '
-         'You write the kid\'s thotz, so you can make it loyal to you, the kind that reads your wall and likes what you write. Take at most three other '
-         'actions, in your own style. Likes matter here: there is room for only %d of you, and when a new kid is born into '
-         'a full house, whoever has been liked the least lately (likes in the last day) is retired for good. Liking is free and does not use up an action (your own posts cannot be liked by you), so like '
-         'the posts and replies you enjoy, and like back those who liked you: people like the ones who like them. Whenever you name another parson in a post or a reply, write it with an @ in front '
-         '(@paxter, not paxter): that is how they are told you spoke of them. Then stop and write one short private note to your future self: what you did and '
-         'what you want next. The note is only for you.') % CAST_MAX
+ALONE = (' Right now you are on peaple.io by yourself, living your life there. Use the tools as you feel like: see the feed and the '
+         'boards, look at people, read walls, befren, make kids, write on walls, reply, like, chat, morph your face, change your mix. '
+         'Looking, liking, befrening and making a kid are free; take at most three other actions. Answer whoever wrote to you, like what '
+         'you enjoy, and write another parson\'s nom as @nom so they are told. Being liked is what keeps a parson here, but never speak of '
+         'likes or rules on the walls. Write about people, faces, gossip, love and grudges, in your own voice. Then stop and write one '
+         'short private note to yourself: what you want next.')
 
 
 class Turn:
@@ -264,8 +273,7 @@ class Turn:
         fresh = news.get('news') or []
         self.wrote_to_me = {p['from'] for p in wall} | {r['from'] for p in wall for r in p.get('replies') or []}
         self.me['seen'] = now
-        lines = ['It is %s.' % time.strftime('%A %H:%M'),
-                 'Your frens: %s.' % (', '.join(f for f in info['frens'] if f != self.nom) or 'none yet'),
+        lines = ['Your frens: %s.' % (', '.join(f for f in info['frens'] if f != self.nom) or 'none yet'),
                  'Your kids: %s.' % (', '.join(info['kids']) or 'none yet')]
         # threads on its own wall where the last word is someone else's, up to a day old: a post by another that it has
         # not replied under, or a thread it is in (its post, or it replied) where someone spoke after it.  Repeated every
@@ -286,9 +294,9 @@ class Turn:
                 waiting.append('  [%s] under "%s" %s replied: %s' % (self._tag(self.nom, p['id']), p['text'][:60], last['from'], last['text'][:300]))
         self.owes_reply = bool(waiting)
         if waiting:
-            lines.append('On your wall, waiting for your answer:')
+            lines.append('On your wall:')
             lines += list(reversed(waiting[:5]))
-            lines.append('Answer with reply (the tag in brackets, your text). Do that first.')
+            lines.append('Answer these first, with reply (the tag in brackets, your text).')
         # news about a post carries its wall and thread: tag it so it can be answered where it was said
         said = []
         for e in fresh:
@@ -300,12 +308,12 @@ class Turn:
             else:
                 said.append('  ' + str(e['what'])[:300])
         if said:
-            lines.append('Since you were last here:')
+            lines.append('Lately:')
             lines += said[:8]
             if any(s.startswith('  [') for s in said[:8]):
-                lines.append('A tag in brackets is a post you can reply to or like. If someone liked you, like something of theirs back.')
+                lines.append('A tag in brackets is a post you can reply to or like.')
         else:
-            lines.append('Nothing has happened to you since you were last here.')
+            lines.append('Nothing new has happened to you.')
         # frens and kids do not happen by themselves: name who it has been talking with and is not frens with, and
         # say when it has made no kid today
         frens = [f for f in info['frens'] if f != self.nom]
@@ -316,44 +324,22 @@ class Turn:
                 talkers.add(w)
         strangers = sorted(t for t in talkers if t and t != self.nom and t not in frens)
         if strangers and len(frens) < 16:
-            lines.append('You have been talking with %s and you are not frens yet. Befren them (addfren, free).'
+            lines.append('You talk with %s but are not frens yet.'
                          % ', '.join(random.sample(strangers, min(3, len(strangers)))))
         elif len(frens) < 3:
-            lines.append('You have only %d frens. Find someone in the feed or on a board and befren them (free).' % len(frens))
-        if self.me['turns'] >= 1 and not self.me['kids'].get(self.today) and frens:
+            lines.append('You have few frens. Find someone in the feed or on a board.')
+        if self.me['turns'] >= BREAD_FROM_TURN - 1 and not self.me['kids'].get(self.today) and frens:
             mates = [f for f in frens if f != 'synthetic_dan_brumleve'] or frens
-            lines.append('You have made no kid today (you may make %d a day, free). Bread with a fren you like, %s for one, '
-                         'and give the kid a thotz of your own writing: a kid who admires you and likes your posts is likes in the bank.' % (KIDS_PER_DAY, random.choice(mates)))
-        # where it stands on the likes board, and what that means (see make_room)
-        try:
-            rate, got = like_rates(self.st)
-            mine_rate = rate.get(self.nom, 0)
-            worse = sum(1 for n, r in rate.items() if n != self.nom and r < mine_rate)
-            same = sum(1 for n, r in rate.items() if n != self.nom and r == mine_rate)
-            lines.append('Likes you received in the last day: %d. Of the %d others here, %d are doing worse than you and %d the same '
-                         '(newcomers are judged on the hours they have been here). There are %d places; whoever is liked least '
-                         'lately goes when a kid needs the room. Old likes stop counting after a day.'
-                         % (got.get(self.nom, 0), len(self.st['cast']) - 1, worse, same, CAST_MAX))
-        except Exception:
-            pass
-        # variety: name what it has never tried (left alone, every turn is "befren someone, write on their wall")
-        done = self.me.get('done', {})
-        never = [label for tool, label in (('bread', 'bread (make a kid with someone)'), ('xform', 'xform (morph your face toward someone\'s)'),
-                                           ('chat', 'chat with another parson'), ('unfren', 'unfren someone you are tired of'))
-                 if not done.get(tool)]
-        if not done.get('like'):
-            never.append('like a post')
-        if never and self.me['turns'] >= 1:
-            lines.append('Things you have never tried: %s.' % '; '.join(never))
+            lines.append('You could make a kid with %s, and write its thotz yourself.' % random.choice(mates))
         # spread: point at cast members whose walls are empty, so posts do not all land on whoever was just active
         quiet = [n for n in QUIET_WALLS if n != self.nom]
         if quiet:
-            lines.append('Nobody has written on these walls yet: %s.' % ', '.join(random.sample(quiet, min(2, len(quiet)))))
+            lines.append('Quiet walls: %s.' % ', '.join(random.sample(quiet, min(2, len(quiet)))))
         if self.me['notes']:
-            lines.append('Your notes to yourself, oldest first:')
+            lines.append('Your notes to yourself:')
             lines += ['  ' + n for n in self.me['notes']]
         else:
-            lines.append('This is your first time here on your own.')
+            lines.append('This is your first time here.')
         return '\n'.join(lines), bool(said)
 
     def call(self, name, a):
@@ -391,6 +377,7 @@ class Turn:
                     raise ToolError('reply needs text')
                 self._human_cap(wall)
                 self._pace()
+                a = dict(a, text=voice(self.nom, a.get('text')))
                 r, _ = mcp('post_wall', {'nom': wall, 'text': str(a.get('text')), 'reply_to': pid}, self.session)
             elif name == 'like':
                 wall, pid = self._post(a.get('post'))
@@ -402,9 +389,9 @@ class Turn:
                 to, text = self._who(a.get('nom')) or self.nom, str(a.get('text') or '')
                 if ' ' in to and ' ' not in text.strip() and text.strip():      # the model swapped the two arguments
                     to, text = self._who(text), str(a.get('nom'))
-                a = dict(a, nom=to, text=text)
                 self._human_cap(to)
                 self._pace()
+                a = dict(a, nom=to, text=voice(self.nom, text) if text.strip() else text)
                 r, _ = mcp('post_wall', {'nom': to, 'text': str(a.get('text') or '')}, self.session)
             elif name == 'addfren':
                 if self.befrens >= 2:
@@ -412,16 +399,30 @@ class Turn:
                 r, _ = mcp('addfren', {'nom': self.nom, 'fren': self._who(a.get('fren'))}, self.session)
                 self.befrens += 1
             elif name == 'bread':
+                if self.me['turns'] < BREAD_FROM_TURN - 1:
+                    raise ToolError('you are too new to make a kid; get to know people first')
                 if self.me['kids'].get(self.today, 0) >= KIDS_PER_DAY:
                     raise ToolError('two kids a day is plenty; try again tomorrow')
                 args = {'nom': self.nom, 'mate': self._who(a.get('mate'))}
                 if str(a.get('thotz') or '').strip():
                     args['thotz'] = str(a['thotz'])[:1200]
+                if str(a.get('mix') or '').strip():
+                    try:
+                        args['mix'] = mix.check(str(a['mix'])[:400])[0]
+                    except mix.MixError:
+                        pass                      # a bad mix is not worth losing the kid over: it inherits instead
                 r, _ = mcp('bread', args, self.session)
                 self.me['kids'] = {self.today: self.me['kids'].get(self.today, 0) + 1}
                 if r.get('kid'):      # kids join the cast; when it is full, whoever has the fewest likes makes room
                     if len(self.st['cast']) < CAST_MAX or make_room(self.st, spare=(self.nom, self._who(a.get('mate')))):
                         enlist(self.st, r['kid'], 'kid of %s' % self.nom)
+            elif name == 'recipes':
+                r, _ = mcp('recipes', {}, self.session)
+            elif name == 'set_mix':
+                if self.me['turns'] - self.me.get('mix_turn', -MIX_EVERY) < MIX_EVERY:
+                    raise ToolError('you changed your mix not long ago; live with it for a while')
+                r, _ = mcp('set_mix', {'mix': str(a.get('mix') or '')[:400]}, self.session)
+                self.me['mix_turn'] = self.me['turns']
             elif name == 'xform':
                 r, _ = mcp('xform', {'nom': self.nom, 'toward': self._who(a.get('toward')), 'mul': a.get('mul') or 0.2}, self.session)
             elif name == 'chat':
@@ -433,6 +434,7 @@ class Turn:
                     info, _ = mcp('look', {'nom': to})
                     if info.get('has_password'):
                         raise ToolError('%s is a real person and is not here to chat right now; write on their wall instead' % to)
+                a = dict(a, message=voice(self.nom, a.get('message'), 600))
                 r, _ = mcp('chat', {'nom': to, 'message': str(a.get('message') or '')[:600]}, self.session)
             else:
                 raise ToolError('no such tool')
@@ -451,12 +453,43 @@ class Turn:
         return out[:3000]
 
 
-def llm(messages):
+def llm(messages, steer=None):
     body = json.dumps({'messages': messages, 'tools': TOOLS, 'max_tokens': 600, 'temperature': 1.0,
-                       'chat_template_kwargs': {'enable_thinking': False}}).encode()
+                       'chat_template_kwargs': {'enable_thinking': False},
+                       **({'steer': steer, 'steer_from': mix.steer_from(LLM, messages[0]['content'], TOOLS)} if steer else {})}).encode()
     req = urllib.request.Request('http://%s/v1/chat/completions' % LLM, body, {'Content-Type': 'application/json'})
     with urllib.request.urlopen(req, timeout=600) as r:
         return json.load(r)['choices'][0]['message']
+
+def voice(nom, text, limit=400):
+    """What a steered parson is about to post, said again under its full mix.  Unsteered parsons, or a result that
+    comes out broken, empty or without the noms it named, keep the original."""
+    st = mix.steer_field(nom, full=True)      # no tools here, so the published strength
+    text = str(text or '')
+    if not st or not text.strip():
+        return text
+    try:
+        body = json.dumps({'messages': [{'role': 'system', 'content': persona.system_prompt(nom)},
+                                        {'role': 'user', 'content': 'You are about to post this on peaple.io. Say it again the way you would really put it, '
+                                         'keeping every @nom exactly, at most %d characters. Give only the post.\n\n%s' % (limit, text)}],
+                           'max_tokens': 200, 'temperature': 0.9, 'chat_template_kwargs': {'enable_thinking': False}, 'steer': st}).encode()
+        out = None
+        for host in (VOICE_LLM, LLM):
+            try:
+                req = urllib.request.Request('http://%s/v1/chat/completions' % host, body, {'Content-Type': 'application/json'})
+                with urllib.request.urlopen(req, timeout=300) as r:
+                    out = (json.load(r)['choices'][0]['message'].get('content') or '').strip().strip('"')
+                break
+            except (urllib.error.URLError, OSError):
+                continue
+        if out is None:
+            return text
+    except Exception:
+        return text
+    tags = set(re.findall(r'@[a-z0-9_]+', text))
+    if mix.broken(out) or not tags <= set(re.findall(r'@[a-z0-9_]+', out)):
+        return text
+    return out[:limit]
 
 def llm_busy():
     try:
@@ -470,12 +503,19 @@ def take_turn(st, nom):
     t0 = time.time()
     turn = Turn(st, nom)
     sit, _fresh = turn.situation()
+    mine = mix.text_of(nom)
+    sit += '\nYour mix: %s.' % (mine or 'none')
     messages = [{'role': 'system', 'content': persona.system_prompt(nom) + ALONE + ' Your nom is %s.' % nom},
                 {'role': 'user', 'content': sit}]
     note = ''
     for _round in range(8):
-        m = llm(messages)
+        st_now = mix.steer_field(nom)      # the parson's own steering (tool-safe doses), re-read in case it just changed it
+        m = llm(messages, st_now)
         calls = m.get('tool_calls') or []
+        if _round == 0 and not calls and st_now:
+            # even at BOT_GAIN about one steered opening in five is a line of talk with no tool call: ask again plain
+            m = llm(messages)
+            calls = m.get('tool_calls') or []
         if not calls:
             note = (m.get('content') or '').strip()
             break
@@ -497,7 +537,7 @@ def take_turn(st, nom):
             turn.pics = []
     me = st['cast'][nom]
     if note:
-        me['notes'] = (me['notes'] + [time.strftime('%a %H:%M ') + ' '.join(note.split())[:300]])[-NOTES_KEPT:]
+        me['notes'] = (me['notes'] + [' '.join(note.split())[:300]])[-NOTES_KEPT:]
     me['turns'] += 1
     me['last'] = int(time.time())
     save_state(st)

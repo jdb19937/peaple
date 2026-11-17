@@ -5,6 +5,7 @@ visages/
 __pycache__/
 # runtime state and secrets (2026-11-15 social layer)
 bots.json
+bots.json.bak-*
 session.key
 feed.jsonl
 news_seen.json
@@ -13,3 +14,9 @@ views.sketch
 walls/
 *.tmp
 thotz/
+steer/resid_norms
+steer/resid_norms.err
+steer/campaign/
+steer/acts
+steer/calibrate.log
+steer/toolvec/
