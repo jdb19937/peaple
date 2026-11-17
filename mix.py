@@ -110,6 +110,12 @@ def expand(ts, strict=True, full=False):
         if strict:
             raise MixError('at most %d terms' % LIMITS['terms'])
         ts = ts[:LIMITS['terms']]
+    if not full:
+        # Each calibrated recipe at weight 1 already uses up what tool use can bear, so several together share that
+        # budget: when the weights add up to more than 1 they are scaled down in proportion.
+        total = sum(abs(w) / (TOOL_DOSE_DEFAULT if NEURON.match(name) else 1.0) for w, name in ts)
+        if total > 1.0:
+            ts = [(w / total, name) for w, name in ts]
     acc = {}
     for w, name in ts:
         m = NEURON.match(name)
