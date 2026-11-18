@@ -325,6 +325,33 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         self.dispatch()
 
+    def do_HEAD(self):
+        """Link checkers and preview fetchers ask with HEAD first.  Answer as for GET, headers only; never for the acting paths."""
+        p = urllib.parse.urlsplit(self.path).path
+        if p.startswith(('/do/', '/as/')) or p == '/mcp':
+            self.send_response(405); self.send_header('Allow', 'GET'); self.send_header('Content-Length', '0'); self.end_headers()
+            return
+        real, self.command = self.wfile, 'GET'
+        class HeadOnly:
+            done = False
+            def write(w, b):
+                if w.done:
+                    return len(b)
+                i = b.find(b'\r\n\r\n')
+                if i >= 0:
+                    w.done = True
+                    real.write(b[:i + 4])
+                else:
+                    real.write(b)
+                return len(b)
+            def flush(w):
+                real.flush()
+        self.wfile = HeadOnly()
+        try:
+            self.dispatch()
+        finally:
+            self.wfile = real
+
     def dispatch(self):
         url = urllib.parse.urlsplit(self.path)
         if url.path.startswith('/fontasy/') or url.path == '/button.png':
@@ -332,6 +359,10 @@ class Handler(BaseHTTPRequestHandler):
         parts = url.path.strip('/').split('/')
         if url.path == '/mcp':
             return self.mcp()
+        if self.command == 'GET' and (parts[0] in ('do', 'as', 'hello') or url.path in ('/robots.txt', '/llms.txt', '/skill.md', '/sitemap.xml')):
+            import getapi
+            if getapi.handle(self, url, parts):      # the GET interface for bots (getapi.py); nothing links to it but /hello
+                return
         m = re.match(r'^/top/(online|activity|likes|likes24)\.json$', url.path)
         if m:
             n = urllib.parse.parse_qs(url.query).get('n', ['256'])[0]

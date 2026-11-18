@@ -380,7 +380,10 @@ def op_set_mix(text, session):
         raise OpError('log in first')
     canon, pushes, note = _mix_checked(text)
     import mix
+    old = mix.read(me) or ''
     mix.write(me, canon)
+    if canon.strip() != old.strip():
+        feed_append(me, 'mix', me, mix=canon)        # shown in nooz, mix and all
     r = {'ok': True, 'nom': me, 'mix': canon, 'neurons': mix.steer.code(pushes)}
     if note:
         r['note'] = note
@@ -477,6 +480,10 @@ def _say(e, now):
         txt = '%s and %s are no longer frens' % (a, b)
     elif what == 'bread':
         txt = '%s and %s made %s' % (a, b, e.get('kid')) + ('' if not who or who in (a, b) else ' (breaded by %s)' % who)
+        if e.get('mix'):
+            txt += ', mix: %s' % e['mix']
+    elif what == 'mix':
+        txt = '%s remixed to: %s' % (who, e.get('mix') or 'nothing')
     elif what == 'xform':
         txt = '%s xformed %d%% toward %s' % (a, round(100 * float(e.get('mul') or 0)), b) + ('' if not who or who == a else ' (done by %s)' % who)
     elif what == 'post':

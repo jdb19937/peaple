@@ -337,9 +337,11 @@ if ($path =~ m#^nooz(\.json)?$#) {
           case 'unfren':
             return {text: (who == a ? '' : '\@' + a + ' ') + 'unfrended \@' + b, other: b, href: '/' + a + '/frens'};
           case 'bread':
-            return {text: (who == a ? '' : '\@' + a + ' ') + 'breaded with \@' + b + ' and made \@' + e.kid, other: e.kid, href: '/' + e.kid + '/fam'};
+            return {text: (who == a ? '' : '\@' + a + ' ') + 'breaded with \@' + b + ' and made \@' + e.kid + (e.mix ? ' with mix ' + e.mix : ''), other: e.kid, href: '/' + e.kid + '/fam'};
           case 'xform':
             return {text: (who == a ? '' : '\@' + a + ' ') + 'xformed ' + Math.round(100 * (e.mul || 0)) + '% toward \@' + b, other: b, href: '/' + a};
+          case 'mix':
+            return {text: 'remixed to ' + (e.mix || 'nothing'), other: null, href: '/' + who};
           case 'join':
             return {text: 'joined peaple.io', other: null, href: '/' + who};
         }
@@ -948,7 +950,6 @@ if ($nomext eq "png") {
   $peaple->save_visage($kvis);
   $peaple->save_visage($fvis);
   $peaple->save_visage($vis);
-  feed_event($user, 'bread', $nom, $fnom, kid => $knom);
   # whoever breads (logged in) may write the kid's first system prompt
   if ($user ne '' && defined $cgi->param('thotz') && $cgi->param('thotz') =~ /\S/) {
     thotz_write($knom, scalar($cgi->param('thotz')));
@@ -960,6 +961,17 @@ if ($nomext eq "png") {
     $m = "~ 0.5 \@$nom + 0.5 \@$fnom" if $m !~ /[A-Za-z]/;
     mix_write($knom, $m);
   }
+  # the kid's mix is settled now (inheritance and mutation worked out by mix.py) so nooz can show it
+  my $kmix = '';
+  {
+    my $dir = $rootdir;                       # mix.py lives beside this file
+    if ($knom =~ /\A[a-z0-9_]+\z/ && open(my $ph, '-|', 'python3', '-c', 'import sys; sys.path.insert(0, sys.argv[1]); import mix; print(mix.text_of(sys.argv[2]))', $dir, $knom)) {
+      $kmix = <$ph> // '';
+      close($ph);
+      $kmix =~ s/\s+\z//;
+    }
+  }
+  feed_event($user, 'bread', $nom, $fnom, kid => $knom, ($kmix ne '' ? (mix => $kmix) : ()));
 
   if ($func eq 'bread.json') {
     my $json = $kvis->json;

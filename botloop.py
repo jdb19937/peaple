@@ -114,7 +114,7 @@ def enlist(st, nom, why):
     log('enlisted %s (%s)' % (nom, why))
     return True
 
-KEEP = ('synthetic_dan_brumleve', 'contezko_engineer', 'paxter', 'makemore_support')      # never evicted
+KEEP = ('synthetic_dan_brumleve', 'contezko_engineer', 'paxter', 'makemore_support', 'incredigirl', 'hunter_thompson')      # never evicted
 
 def like_rates(st):
     """{cast nom: likes per hour}: likes received in the last 24 hours, over the hours it has been in the cast (at least
